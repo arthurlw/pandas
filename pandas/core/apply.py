@@ -223,7 +223,7 @@ class NumbaExecutionEngine(BaseExecutionEngine):
         NumbaExecutionEngine.check_numba_support(func)
 
         if not isinstance(data, np.ndarray):
-            axis = data._get_axis_number(cast(Axis, axis))
+            axis = data._get_axis_number(cast("Axis", axis))
 
         # check for data typing
         if not isinstance(data, np.ndarray):
@@ -288,7 +288,7 @@ class NumbaExecutionEngine(BaseExecutionEngine):
             Series,
         )
 
-        func = cast(Callable, func)
+        func = cast("Callable", func)
         args, kwargs = prepare_function_arguments(
             func, args, kwargs, num_required_args=1
         )
@@ -380,7 +380,7 @@ class NumbaExecutionEngine(BaseExecutionEngine):
         def numba_func(values, col_names_index, index, *args):
             results = {}
             for i in range(values.shape[1 - axis]):
-                if axis == 0 or axis == "index":
+                if axis in [0, "index"]:
                     arr = values[:, i]
                     result_key = index[i]
                     arr_index = col_names_index
