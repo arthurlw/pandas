@@ -102,7 +102,7 @@ class _XlsxStyler:
         style_dict : style dictionary to convert
         num_format_str : optional number format string
         """
-        # Create a XlsxWriter format object.
+        # Create an XlsxWriter format object.
         props = {}
 
         if num_format_str is not None:
@@ -245,6 +245,7 @@ class XlsxWriter(ExcelWriter):
         startrow: int = 0,
         startcol: int = 0,
         freeze_panes: tuple[int, int] | None = None,
+        autofilter_range: str | None = None,
     ) -> None:
         # Write the frame cells using xlsxwriter.
         sheet_name = self._get_sheet_name(sheet_name)
@@ -256,7 +257,7 @@ class XlsxWriter(ExcelWriter):
         style_dict = {"null": None}
 
         if validate_freeze_panes(freeze_panes):
-            wks.freeze_panes(*(freeze_panes))
+            wks.freeze_panes(*(freeze_panes))  # pyright: ignore[reportOptionalIterable]
 
         for cell in cells:
             val, fmt = self._value_with_fmt(cell.val)
@@ -282,3 +283,6 @@ class XlsxWriter(ExcelWriter):
                 )
             else:
                 wks.write(startrow + cell.row, startcol + cell.col, val, style)
+
+        if autofilter_range:
+            wks.autofilter(autofilter_range)

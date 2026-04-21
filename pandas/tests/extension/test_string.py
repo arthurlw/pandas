@@ -31,7 +31,7 @@ import pandas._testing as tm
 from pandas.api.types import is_string_dtype
 from pandas.core.arrays import ArrowStringArray
 from pandas.core.arrays.string_ import StringDtype
-from pandas.tests.arrays.string_.test_string import string_dtype_highest_priority
+from pandas.tests.arithmetic.test_string import string_dtype_highest_priority
 from pandas.tests.extension import base
 
 
@@ -49,7 +49,7 @@ def maybe_split_array(arr, chunked):
         [*arrow_array[:split].chunks, *arrow_array[split:].chunks]
     )
     assert arrow_array.num_chunks == 2
-    return type(arr)(arrow_array)
+    return arr._from_pyarrow_array(arrow_array)
 
 
 @pytest.fixture(params=[True, False])
@@ -65,9 +65,9 @@ def dtype(string_dtype_arguments):
 
 @pytest.fixture
 def data(dtype, chunked):
-    strings = np.random.default_rng(2).choice(list(string.ascii_letters), size=100)
+    strings = np.random.default_rng(2).choice(list(string.ascii_letters), size=10)
     while strings[0] == strings[1]:
-        strings = np.random.default_rng(2).choice(list(string.ascii_letters), size=100)
+        strings = np.random.default_rng(2).choice(list(string.ascii_letters), size=10)
 
     arr = dtype.construct_array_type()._from_sequence(strings, dtype=dtype)
     return maybe_split_array(arr, chunked)
@@ -101,6 +101,28 @@ def data_for_grouping(dtype, chunked):
 
 
 class TestStringArray(base.ExtensionTests):
+    def _honors_copy_keyword(self, data) -> bool:
+        return data.dtype.storage != "pyarrow"
+
+    @pytest.mark.parametrize("na_action", [None, "ignore"])
+    def test_map(self, data_missing, na_action, request, using_infer_string):
+        if data_missing.dtype.storage == "python" and not using_infer_string:
+            request.applymarker(
+                pytest.mark.xfail(
+                    reason="StringArray[python] _cast_pointwise_result "
+                    "does not re-wrap, going away with infer_string"
+                )
+            )
+        super().test_map(data_missing, na_action)
+
+    def test_combine_le(self, data_repeated):
+        dtype = next(iter(data_repeated(2))).dtype
+        if dtype.storage == "pyarrow" and dtype.na_value is pd.NA:
+            self._combine_le_expected_dtype = "bool[pyarrow]"
+        else:
+            self._combine_le_expected_dtype = "bool"
+        return super().test_combine_le(data_repeated)
+
     def test_eq_with_str(self, dtype):
         super().test_eq_with_str(dtype)
 
@@ -108,8 +130,7 @@ class TestStringArray(base.ExtensionTests):
             # only the NA-variant supports parametrized string alias
             assert dtype == f"string[{dtype.storage}]"
         elif dtype.storage == "pyarrow":
-            with tm.assert_produces_warning(FutureWarning):
-                assert dtype == "string[pyarrow_numpy]"
+            assert dtype == "str"
 
     def test_is_not_string_type(self, dtype):
         # Different from BaseDtypeTests.test_is_not_string_type
@@ -190,7 +211,7 @@ class TestStringArray(base.ExtensionTests):
         return None
 
     def _supports_reduction(self, ser: pd.Series, op_name: str) -> bool:
-        return op_name in ["min", "max", "sum"] or (
+        return op_name in ["min", "max", "sum", "count"] or (
             ser.dtype.na_value is np.nan  # type: ignore[union-attr]
             and op_name in ("any", "all")
         )
@@ -200,7 +221,7 @@ class TestStringArray(base.ExtensionTests):
         return op_name in ["cummin", "cummax", "cumsum"]
 
     def _cast_pointwise_result(self, op_name: str, obj, other, pointwise_result):
-        dtype = cast(StringDtype, tm.get_dtype(obj))
+        dtype = cast("StringDtype", tm.get_dtype(obj))
         if op_name in ["__add__", "__radd__"]:
             cast_to = dtype
             dtype_other = tm.get_dtype(other) if not isinstance(other, str) else None
@@ -214,18 +235,12 @@ class TestStringArray(base.ExtensionTests):
             cast_to = "boolean"  # type: ignore[assignment]
         return pointwise_result.astype(cast_to)
 
-    def test_compare_scalar(self, data, comparison_op):
-        ser = pd.Series(data)
-        self._compare_other(ser, data, comparison_op, "abc")
-
     def test_groupby_extension_apply(self, data_for_grouping, groupby_apply_op):
         super().test_groupby_extension_apply(data_for_grouping, groupby_apply_op)
 
     def test_combine_add(self, data_repeated, using_infer_string, request):
         dtype = next(data_repeated(1)).dtype
-        if using_infer_string and (
-            (dtype.na_value is pd.NA) and dtype.storage == "python"
-        ):
+        if not using_infer_string and dtype.storage == "python":
             mark = pytest.mark.xfail(
                 reason="The pointwise operation result will be inferred to "
                 "string[nan, pyarrow], which does not match the input dtype"
@@ -250,6 +265,22 @@ class TestStringArray(base.ExtensionTests):
             )
             request.applymarker(mark)
         super().test_arith_series_with_array(data, all_arithmetic_operators)
+
+    def test_loc_setitem_with_expansion_preserves_ea_index_dtype(
+        self, data, request, using_infer_string
+    ):
+        if not using_infer_string and data.dtype.storage == "python":
+            mark = pytest.mark.xfail(reason="Casts to object")
+            request.applymarker(mark)
+        super().test_loc_setitem_with_expansion_preserves_ea_index_dtype(data)
+
+    def test_loc_setitem_with_expansion_retains_ea_dtype(
+        self, data, using_infer_string, request
+    ):
+        if not using_infer_string and data.dtype.storage == "python":
+            mark = pytest.mark.xfail(reason="Gives object")
+            request.applymarker(mark)
+        super().test_loc_setitem_with_expansion_retains_ea_dtype(data)
 
 
 class Test2DCompat(base.Dim2CompatTests):

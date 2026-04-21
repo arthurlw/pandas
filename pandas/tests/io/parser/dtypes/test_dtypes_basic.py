@@ -9,7 +9,10 @@ from io import StringIO
 import numpy as np
 import pytest
 
-from pandas.errors import ParserWarning
+from pandas.errors import (
+    Pandas4Warning,
+    ParserWarning,
+)
 
 import pandas as pd
 from pandas import (
@@ -29,7 +32,9 @@ xfail_pyarrow = pytest.mark.usefixtures("pyarrow_xfail")
 @pytest.mark.parametrize("dtype", [str, object])
 @pytest.mark.parametrize("check_orig", [True, False])
 @pytest.mark.usefixtures("pyarrow_xfail")
-def test_dtype_all_columns(all_parsers, dtype, check_orig, using_infer_string):
+def test_dtype_all_columns(
+    all_parsers, dtype, check_orig, using_infer_string, temp_file
+):
     # see gh-3795, gh-6607
     parser = all_parsers
 
@@ -39,20 +44,19 @@ def test_dtype_all_columns(all_parsers, dtype, check_orig, using_infer_string):
         index=["1A", "1B", "1C", "1D", "1E"],
     )
 
-    with tm.ensure_clean("__passing_str_as_dtype__.csv") as path:
-        df.to_csv(path)
+    df.to_csv(temp_file)
 
-        result = parser.read_csv(path, dtype=dtype, index_col=0)
+    result = parser.read_csv(temp_file, dtype=dtype, index_col=0)
 
-        if check_orig:
-            expected = df.copy()
-            result = result.astype(float)
-        elif using_infer_string and dtype is str:
-            expected = df.astype(str)
-        else:
-            expected = df.astype(str).astype(object)
+    if check_orig:
+        expected = df.copy()
+        result = result.astype(float)
+    elif using_infer_string and dtype is str:
+        expected = df.astype(str)
+    else:
+        expected = df.astype(str).astype(object)
 
-        tm.assert_frame_equal(result, expected)
+    tm.assert_frame_equal(result, expected)
 
 
 @pytest.mark.usefixtures("pyarrow_xfail")
@@ -245,14 +249,18 @@ def decimal_number_check(request, parser, numeric_decimal, thousands, float_prec
         request.applymarker(
             pytest.mark.xfail(reason=f"thousands={thousands} and sep is in {value}")
         )
-    df = parser.read_csv(
-        StringIO(value),
-        float_precision=float_precision,
-        sep="|",
-        thousands=thousands,
-        decimal=",",
-        header=None,
-    )
+    warn = Pandas4Warning if float_precision is not None else None
+    with tm.assert_produces_warning(
+        warn, match="float_precision", check_stacklevel=False
+    ):
+        df = parser.read_csv(
+            StringIO(value),
+            float_precision=float_precision,
+            sep="|",
+            thousands=thousands,
+            decimal=",",
+            header=None,
+        )
     val = df.iloc[0, 0]
     assert val == numeric_decimal[1]
 
@@ -265,13 +273,17 @@ def test_skip_whitespace(c_parser_only, float_precision):
 2\t 1\t
 2\t 1.2 \t
 """
-    df = c_parser_only.read_csv(
-        StringIO(DATA),
-        float_precision=float_precision,
-        sep="\t",
-        header=0,
-        dtype={1: np.float64},
-    )
+    warn = Pandas4Warning if float_precision is not None else None
+    with tm.assert_produces_warning(
+        warn, match="float_precision", check_stacklevel=False
+    ):
+        df = c_parser_only.read_csv(
+            StringIO(DATA),
+            float_precision=float_precision,
+            sep="\t",
+            header=0,
+            dtype={1: np.float64},
+        )
     tm.assert_series_equal(df.iloc[:, 1], pd.Series([1.2, 2.1, 1.0, 1.2], name="num"))
 
 
@@ -518,9 +530,6 @@ def test_dtype_backend_pyarrow(all_parsers, request):
     tm.assert_frame_equal(result, expected)
 
 
-# pyarrow engine failing:
-# https://github.com/pandas-dev/pandas/issues/56136
-@pytest.mark.usefixtures("pyarrow_xfail")
 def test_ea_int_avoid_overflow(all_parsers):
     # GH#32134
     parser = all_parsers
@@ -541,20 +550,24 @@ def test_ea_int_avoid_overflow(all_parsers):
     tm.assert_frame_equal(result, expected)
 
 
-def test_string_inference(all_parsers):
+def test_string_inference(all_parsers, using_infer_string):
     # GH#54430
-    dtype = pd.StringDtype(na_value=np.nan)
+    dtype = pd.StringDtype(na_value=np.nan) if using_infer_string else object
 
     data = """a,b
 x,1
 y,2
 ,3"""
     parser = all_parsers
-    with pd.option_context("future.infer_string", True):
-        result = parser.read_csv(StringIO(data))
+    result = parser.read_csv(StringIO(data))
 
     expected = DataFrame(
-        {"a": pd.Series(["x", "y", None], dtype=dtype), "b": [1, 2, 3]},
+        {
+            "a": pd.Series(
+                ["x", "y", None if parser.engine == "pyarrow" else np.nan], dtype=dtype
+            ),
+            "b": [1, 2, 3],
+        },
         columns=pd.Index(["a", "b"], dtype=dtype),
     )
     tm.assert_frame_equal(result, expected)
@@ -568,33 +581,34 @@ x,a
 y,a
 z,a"""
     parser = all_parsers
-    with pd.option_context("future.infer_string", True):
-        result = parser.read_csv(StringIO(data), dtype=dtype)
+    result = parser.read_csv(StringIO(data), dtype=dtype)
 
-    expected_dtype = pd.StringDtype(na_value=np.nan) if dtype is str else object
+    expected_dtype = (
+        pd.StringDtype(na_value=np.nan)
+        if dtype is str and using_infer_string
+        else object
+    )
     expected = DataFrame(
         {
             "a": pd.Series(["x", "y", "z"], dtype=expected_dtype),
             "b": pd.Series(["a", "a", "a"], dtype=expected_dtype),
         },
-        columns=pd.Index(["a", "b"], dtype=pd.StringDtype(na_value=np.nan)),
+        columns=pd.Index(["a", "b"]),
     )
     tm.assert_frame_equal(result, expected)
 
-    with pd.option_context("future.infer_string", True):
-        result = parser.read_csv(StringIO(data), dtype={"a": dtype})
+    result = parser.read_csv(StringIO(data), dtype={"a": dtype})
 
     expected = DataFrame(
         {
             "a": pd.Series(["x", "y", "z"], dtype=expected_dtype),
-            "b": pd.Series(["a", "a", "a"], dtype=pd.StringDtype(na_value=np.nan)),
+            "b": pd.Series(["a", "a", "a"]),
         },
-        columns=pd.Index(["a", "b"], dtype=pd.StringDtype(na_value=np.nan)),
+        columns=pd.Index(["a", "b"]),
     )
     tm.assert_frame_equal(result, expected)
 
 
-@xfail_pyarrow
 def test_accurate_parsing_of_large_integers(all_parsers):
     # GH#52505
     data = """SYMBOL,MOMENT,ID,ID_DEAL

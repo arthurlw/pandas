@@ -12,6 +12,7 @@ from typing import (
 import numpy as np
 
 from pandas._libs import lib
+from pandas.util._decorators import set_module
 
 from pandas.core.dtypes.astype import astype_array
 from pandas.core.dtypes.cast import (
@@ -34,6 +35,10 @@ if TYPE_CHECKING:
         DtypeObj,
     )
 
+    from pandas import (
+        CategoricalIndex,
+        Series,
+    )
     from pandas.core.arrays import (
         Categorical,
         ExtensionArray,
@@ -160,6 +165,10 @@ def _get_result_dtype(
                 # coerce to object
                 target_dtype = np.dtype(object)
                 kinds = {"o"}
+    elif "b" in kinds and len(kinds) > 1:
+        # GH#21108, GH#45101
+        target_dtype = np.dtype(object)
+        kinds = {"o"}
     else:
         # error: Argument 1 to "np_find_common_type" has incompatible type
         # "*Set[Union[ExtensionDtype, Any]]"; expected "dtype[Any]"
@@ -168,8 +177,11 @@ def _get_result_dtype(
     return any_ea, kinds, target_dtype
 
 
+@set_module("pandas.api.types")
 def union_categoricals(
-    to_union, sort_categories: bool = False, ignore_order: bool = False
+    to_union: Sequence[CategoricalIndex | Series | Categorical],
+    sort_categories: bool = False,
+    ignore_order: bool = False,
 ) -> Categorical:
     """
     Combine list-like of Categorical-like, unioning categories.
@@ -223,7 +235,7 @@ def union_categoricals(
     >>> b = pd.Categorical(["a", "b"])
     >>> pd.api.types.union_categoricals([a, b])
     ['b', 'c', 'a', 'b']
-    Categories (3, object): ['b', 'c', 'a']
+    Categories (3, str): ['b', 'c', 'a']
 
     By default, the resulting categories will be ordered as they appear
     in the `categories` of the data. If you want the categories to be
@@ -231,7 +243,7 @@ def union_categoricals(
 
     >>> pd.api.types.union_categoricals([a, b], sort_categories=True)
     ['b', 'c', 'a', 'b']
-    Categories (3, object): ['a', 'b', 'c']
+    Categories (3, str): ['a', 'b', 'c']
 
     `union_categoricals` also works with the case of combining two
     categoricals of the same categories and order information (e.g. what
@@ -241,7 +253,7 @@ def union_categoricals(
     >>> b = pd.Categorical(["a", "b", "a"], ordered=True)
     >>> pd.api.types.union_categoricals([a, b])
     ['a', 'b', 'a', 'b', 'a']
-    Categories (2, object): ['a' < 'b']
+    Categories (2, str): ['a' < 'b']
 
     Raises `TypeError` because the categories are ordered and not identical.
 
@@ -253,13 +265,13 @@ def union_categoricals(
     TypeError: to union ordered Categoricals, all categories must be the same
 
     Ordered categoricals with different categories or orderings can be
-    combined by using the `ignore_ordered=True` argument.
+    combined by using the `ignore_order=True` argument.
 
     >>> a = pd.Categorical(["a", "b", "c"], ordered=True)
     >>> b = pd.Categorical(["c", "b", "a"], ordered=True)
     >>> pd.api.types.union_categoricals([a, b], ignore_order=True)
     ['a', 'b', 'c', 'c', 'b', 'a']
-    Categories (3, object): ['a', 'b', 'c']
+    Categories (3, str): ['a', 'b', 'c']
 
     `union_categoricals` also works with a `CategoricalIndex`, or `Series`
     containing categorical data, but note that the resulting array will
@@ -269,7 +281,7 @@ def union_categoricals(
     >>> b = pd.Series(["a", "b"], dtype="category")
     >>> pd.api.types.union_categoricals([a, b])
     ['b', 'c', 'a', 'b']
-    Categories (3, object): ['b', 'c', 'a']
+    Categories (3, str): ['b', 'c', 'a']
     """
     from pandas import Categorical
     from pandas.core.arrays.categorical import recode_for_categories
@@ -277,7 +289,9 @@ def union_categoricals(
     if len(to_union) == 0:
         raise ValueError("No Categoricals to union")
 
-    def _maybe_unwrap(x):
+    def _maybe_unwrap(
+        x: CategoricalIndex | Series | Categorical,
+    ) -> Categorical:
         if isinstance(x, (ABCCategoricalIndex, ABCSeries)):
             return x._values
         elif isinstance(x, Categorical):
@@ -285,13 +299,13 @@ def union_categoricals(
         else:
             raise TypeError("all components to combine must be Categorical")
 
-    to_union = [_maybe_unwrap(x) for x in to_union]
+    to_union = cast("list[Categorical]", [_maybe_unwrap(x) for x in to_union])
     first = to_union[0]
 
     if not lib.dtypes_all_equal([obj.categories.dtype for obj in to_union]):
         raise TypeError("dtype of categories must be the same")
 
-    ordered = False
+    ordered: bool | None = False
     if all(first._categories_match_up_to_permutation(other) for other in to_union[1:]):
         # identical categories - fastpath
         categories = first.categories
@@ -317,10 +331,11 @@ def union_categoricals(
         if sort_categories:
             categories = categories.sort_values()
 
-        new_codes = [
-            recode_for_categories(c.codes, c.categories, categories) for c in to_union
+        all_codes = [
+            recode_for_categories(c.codes, c.categories, categories, copy=False)
+            for c in to_union
         ]
-        new_codes = np.concatenate(new_codes)
+        new_codes = np.concatenate(all_codes)
     else:
         # ordered - to show a proper error message
         if all(c.ordered for c in to_union):

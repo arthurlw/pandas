@@ -6,6 +6,7 @@ import pytest
 from pandas._config import using_string_dtype
 
 from pandas.compat import HAS_PYARROW
+from pandas.compat.pyarrow import pa_version_under14p0
 
 from pandas import (
     DataFrame,
@@ -77,7 +78,7 @@ def test_read_csv(cleared_fs, df1):
     df2 = read_csv("memory://test/test.csv", parse_dates=["dt"])
 
     expected = df1.copy()
-    expected["dt"] = expected["dt"].astype("M8[s]")
+    expected["dt"] = expected["dt"].astype("M8[us]")
     tm.assert_frame_equal(df2, expected)
 
 
@@ -102,7 +103,7 @@ def test_to_csv(cleared_fs, df1):
     df2 = read_csv("memory://test/test.csv", parse_dates=["dt"], index_col=0)
 
     expected = df1.copy()
-    expected["dt"] = expected["dt"].astype("M8[s]")
+    expected["dt"] = expected["dt"].astype("M8[us]")
     tm.assert_frame_equal(df2, expected)
 
 
@@ -115,7 +116,7 @@ def test_to_excel(cleared_fs, df1):
     df2 = read_excel(path, parse_dates=["dt"], index_col=0)
 
     expected = df1.copy()
-    expected["dt"] = expected["dt"].astype("M8[s]")
+    expected["dt"] = expected["dt"].astype("M8[us]")
     tm.assert_frame_equal(df2, expected)
 
 
@@ -139,7 +140,7 @@ def test_to_csv_fsspec_object(cleared_fs, binary_mode, df1):
         assert not fsspec_object.closed
 
     expected = df1.copy()
-    expected["dt"] = expected["dt"].astype("M8[s]")
+    expected["dt"] = expected["dt"].astype("M8[us]")
     tm.assert_frame_equal(df2, expected)
 
 
@@ -179,7 +180,11 @@ def test_excel_options(fsspectest):
 
 
 @pytest.mark.xfail(
-    using_string_dtype() and HAS_PYARROW, reason="TODO(infer_string) fastparquet"
+    using_string_dtype() and HAS_PYARROW and not pa_version_under14p0,
+    reason="TODO(infer_string) fastparquet",
+)
+@pytest.mark.filterwarnings(
+    "ignore:The 'fastparquet' engine is deprecated:DeprecationWarning"
 )
 def test_to_parquet_new_file(cleared_fs, df1):
     """Regression test for writing to a not-yet-existent GCS Parquet file."""
@@ -209,6 +214,9 @@ def test_arrowparquet_options(fsspectest):
     assert fsspectest.test[0] == "parquet_read"
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The 'fastparquet' engine is deprecated:DeprecationWarning"
+)
 def test_fastparquet_options(fsspectest):
     """Regression test for writing to a not-yet-existent GCS Parquet file."""
     pytest.importorskip("fastparquet")
@@ -253,6 +261,9 @@ def test_s3_protocols(s3_bucket_public_with_data, s3so, tips_file, protocol):
     tm.assert_equal(df_from_s3, df_from_local)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The 'fastparquet' engine is deprecated:DeprecationWarning"
+)
 @pytest.mark.xfail(using_string_dtype(), reason="TODO(infer_string) fastparquet")
 @pytest.mark.single_cpu
 def test_s3_parquet(s3_bucket_public, s3so, df1):

@@ -5,10 +5,12 @@ split-apply-combine paradigm.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import (
     TYPE_CHECKING,
     final,
 )
+import warnings
 
 import numpy as np
 
@@ -16,8 +18,15 @@ from pandas._libs import (
     algos as libalgos,
 )
 from pandas._libs.tslibs import OutOfBoundsDatetime
-from pandas.errors import InvalidIndexError
-from pandas.util._decorators import cache_readonly
+from pandas.errors import (
+    InvalidIndexError,
+    Pandas4Warning,
+)
+from pandas.util._decorators import (
+    cache_readonly,
+    set_module,
+)
+from pandas.util._exceptions import find_stack_level
 
 from pandas.core.dtypes.common import (
     ensure_int64,
@@ -63,6 +72,7 @@ if TYPE_CHECKING:
     from pandas.core.generic import NDFrame
 
 
+@set_module("pandas")
 class Grouper:
     """
     A Grouper allows the user to specify a groupby instruction for an object.
@@ -91,7 +101,7 @@ class Grouper:
         This will groupby the specified frequency if the target selection
         (via key or level) is a datetime-like object. For full specification
         of available frequencies, please see :ref:`here<timeseries.offset_aliases>`.
-    sort : bool, default to False
+    sort : bool, default False
         Whether to sort the resulting labels.
     closed : {'left' or 'right'}
         Closed end of interval. Only when `freq` parameter is passed.
@@ -113,9 +123,7 @@ class Grouper:
         - 'end': `origin` is the last value of the timeseries
         - 'end_day': `origin` is the ceiling midnight of the last day
 
-        .. versionadded:: 1.3.0
-
-    offset : Timedelta or str, default is None
+    offset : Timedelta or str, default None
         An offset timedelta added to the origin.
 
     dropna : bool, default True
@@ -286,18 +294,22 @@ class Grouper:
         self._indexer: npt.NDArray[np.intp] | None = None
 
     def _get_grouper(
-        self, obj: NDFrameT, validate: bool = True
+        self, obj: NDFrameT, validate: bool = True, observed: bool = True
     ) -> tuple[ops.BaseGrouper, NDFrameT]:
         """
         Parameters
         ----------
         obj : Series or DataFrame
+            Object being grouped.
         validate : bool, default True
-            if True, validate the grouper
+            If True, validate the grouper.
+        observed : bool, default True
+            Whether only observed groups should be in the result. Only
+            has an impact when grouping on categorical data.
 
         Returns
         -------
-        a tuple of grouper, obj (possibly sorted)
+        A tuple of grouper, obj (possibly sorted)
         """
         obj, _, _ = self._set_grouper(obj)
         grouper, _, obj = get_grouper(
@@ -307,6 +319,7 @@ class Grouper:
             sort=self.sort,
             validate=validate,
             dropna=self.dropna,
+            observed=observed,
         )
 
         return grouper, obj
@@ -355,9 +368,9 @@ class Grouper:
                 if self._indexer is not None:
                     reverse_indexer = self._indexer.argsort()
                     unsorted_ax = self._grouper.take(reverse_indexer)
-                    ax = unsorted_ax.take(obj.index)
+                    ax = unsorted_ax.take(obj.index)  # type: ignore[arg-type]
                 else:
-                    ax = self._grouper.take(obj.index)
+                    ax = self._grouper.take(obj.index)  # type: ignore[arg-type]
             else:
                 if key not in obj._info_axis:
                     raise KeyError(f"The grouper name {key} is not found")
@@ -374,9 +387,8 @@ class Grouper:
                     level = ax._get_level_number(level)
                     ax = Index(ax._get_level_values(level), name=ax.names[level])
 
-                else:
-                    if level not in (0, ax.name):
-                        raise ValueError(f"The level {level} is not valid")
+                elif level not in (0, ax.name):
+                    raise ValueError(f"The level {level} is not valid")
 
         # possibly sort
         indexer: npt.NDArray[np.intp] | None = None
@@ -415,7 +427,7 @@ class Grouping:
     obj : DataFrame or Series
     name : Label
     level :
-    observed : bool, default False
+    observed : bool, default True
         If we are a Categorical, use the observed values
     in_axis : if the Grouping is a column in self.obj and hence among
         Groupby.exclusions list
@@ -448,11 +460,13 @@ class Grouping:
         obj: NDFrame | None = None,
         level=None,
         sort: bool = True,
-        observed: bool = False,
+        observed: bool = True,
         in_axis: bool = False,
         dropna: bool = True,
         uniques: ArrayLike | None = None,
     ) -> None:
+        if isinstance(grouper, Series):
+            grouper = grouper.copy(deep=False)
         self.level = level
         self._orig_grouper = grouper
         grouping_vector = _convert_grouper(index, grouper)
@@ -506,7 +520,9 @@ class Grouping:
                 # error: Cannot determine type of "grouping_vector"  [has-type]
                 ng = newgrouper.groupings[0].grouping_vector  # type: ignore[has-type]
                 # use Index instead of ndarray so we can recover the name
-                grouping_vector = Index(ng, name=newgrouper.result_index.name)
+                grouping_vector = Index(
+                    ng, name=newgrouper.result_index.name, copy=False
+                )
 
         elif not isinstance(
             grouping_vector, (Series, Index, ExtensionArray, np.ndarray)
@@ -583,6 +599,15 @@ class Grouping:
             index = self._index
             if level not in index.names:
                 raise AssertionError(f"Level {level} not in index")
+            if isinstance(index, MultiIndex) and index.names.count(level) > 1:
+                warnings.warn(
+                    f"Grouping by index level '{level}' which matches multiple "
+                    f"index levels is ambiguous. Currently the first matching "
+                    f"level is used. In a future version of pandas, this will "
+                    f"raise a ValueError. Use the level number instead.",
+                    Pandas4Warning,
+                    stacklevel=find_stack_level(),
+                )
             return index.names.index(level)
         return level
 
@@ -675,13 +700,13 @@ class Grouping:
     @cache_readonly
     def groups(self) -> dict[Hashable, Index]:
         codes, uniques = self._codes_and_uniques
-        uniques = Index._with_infer(uniques, name=self.name)
+        uniques = Index._with_infer(uniques, name=self.name, copy=False)  # type: ignore[assignment]
 
         r, counts = libalgos.groupsort_indexer(ensure_platform_int(codes), len(uniques))
         counts = ensure_int64(counts).cumsum()
-        _result = (r[start:end] for start, end in zip(counts, counts[1:]))
+        _result = (r[start:end] for start, end in pairwise(counts))
         # map to the label
-        result = {k: self._index.take(v) for k, v in zip(uniques, _result)}
+        result = {k: self._index.take(v) for k, v in zip(uniques, _result, strict=True)}
 
         return PrettyDict(result)
 
@@ -713,7 +738,7 @@ def get_grouper(
     key=None,
     level=None,
     sort: bool = True,
-    observed: bool = False,
+    observed: bool = True,
     validate: bool = True,
     dropna: bool = True,
 ) -> tuple[ops.BaseGrouper, frozenset[Hashable], NDFrameT]:
@@ -787,7 +812,7 @@ def get_grouper(
 
     # a passed-in Grouper, directly convert
     if isinstance(key, Grouper):
-        grouper, obj = key._get_grouper(obj, validate=False)
+        grouper, obj = key._get_grouper(obj, validate=False, observed=observed)
         if key.key is None:
             return grouper, frozenset(), obj
         else:
@@ -870,7 +895,7 @@ def get_grouper(
             return gpr._mgr.references_same_values(obj_gpr_column._mgr, 0)
         return False
 
-    for gpr, level in zip(keys, levels):
+    for gpr, level in zip(keys, levels, strict=True):
         if is_in_obj(gpr):  # df.groupby(df['name'])
             in_axis = True
             exclusions.add(gpr.name)

@@ -13,6 +13,7 @@ import zipfile
 import numpy as np
 import pytest
 
+from pandas.errors import Pandas4Warning
 import pandas.util._test_decorators as td
 
 import pandas as pd
@@ -838,7 +839,7 @@ class TestStata:
             np.int32,
             np.float64,
         )
-        for c, t in zip(expected.columns, expected_types):
+        for c, t in zip(expected.columns, expected_types, strict=True):
             expected[c] = expected[c].astype(t)
 
         tm.assert_frame_equal(written_and_read_again, expected)
@@ -869,7 +870,9 @@ class TestStata:
 
         with StataReader(path) as sr:
             sr._ensure_open()  # The `_*list` variables are initialized here
-            for variable, fmt, typ in zip(sr._varlist, sr._fmtlist, sr._typlist):
+            for variable, fmt, typ in zip(
+                sr._varlist, sr._fmtlist, sr._typlist, strict=True
+            ):
                 assert int(variable[1:]) == int(fmt[1:-1])
                 assert int(variable[1:]) == typ
 
@@ -980,7 +983,9 @@ class TestStata:
         mm = [0, 0, 59, 0, 0, 0]
         ss = [0, 0, 59, 0, 0, 0]
         expected = []
-        for year, month, day, hour, minute, second in zip(yr, mo, dd, hr, mm, ss):
+        for year, month, day, hour, minute, second in zip(
+            yr, mo, dd, hr, mm, ss, strict=True
+        ):
             row = []
             for j in range(7):
                 if j == 0:
@@ -1035,7 +1040,7 @@ class TestStata:
             "when writing to stata is deprecated"
         )
         exp_object = expected.astype(object)
-        with tm.assert_produces_warning(FutureWarning, match=msg):
+        with tm.assert_produces_warning(Pandas4Warning, match=msg):
             exp_object.to_stata(path, convert_dates=date_conversion)
         written_and_read_again = self.read_dta(path)
 
@@ -1329,7 +1334,9 @@ class TestStata:
             if isinstance(ser.dtype, CategoricalDtype):
                 cat = ser._values.remove_unused_categories()
                 if cat.categories.dtype == object:
-                    categories = pd.Index._with_infer(cat.categories._values)
+                    categories = pd.Index._with_infer(
+                        cat.categories._values, copy=False
+                    )
                     cat = cat.set_categories(categories)
                 elif cat.categories.dtype == "string" and len(cat.categories) == 0:
                     # if the read categories are empty, it comes back as object dtype
@@ -1339,25 +1346,26 @@ class TestStata:
         return from_frame
 
     def test_iterator(self, datapath):
-        fname = datapath("io", "data", "stata", "stata3_117.dta")
+        fname = datapath("io", "data", "stata", "stata12_117.dta")
 
         parsed = read_stata(fname)
+        expected = parsed.iloc[0:5, :]
 
         with read_stata(fname, iterator=True) as itr:
             chunk = itr.read(5)
-            tm.assert_frame_equal(parsed.iloc[0:5, :], chunk)
+            tm.assert_frame_equal(expected, chunk)
 
         with read_stata(fname, chunksize=5) as itr:
-            chunk = list(itr)
-            tm.assert_frame_equal(parsed.iloc[0:5, :], chunk[0])
+            chunk = next(itr)
+            tm.assert_frame_equal(expected, chunk)
 
         with read_stata(fname, iterator=True) as itr:
             chunk = itr.get_chunk(5)
-            tm.assert_frame_equal(parsed.iloc[0:5, :], chunk)
+            tm.assert_frame_equal(expected, chunk)
 
         with read_stata(fname, chunksize=5) as itr:
             chunk = itr.get_chunk()
-            tm.assert_frame_equal(parsed.iloc[0:5, :], chunk)
+            tm.assert_frame_equal(expected, chunk)
 
         # GH12153
         with read_stata(fname, chunksize=4) as itr:
@@ -1668,7 +1676,7 @@ The repeated labels are:\n-+\nwolof
             path = temp_file
             df.to_stata(path)
 
-    def test_path_pathlib(self):
+    def test_path_pathlib(self, temp_file):
         df = DataFrame(
             1.1 * np.arange(120).reshape((30, 4)),
             columns=pd.Index(list("ABCD")),
@@ -1676,7 +1684,7 @@ The repeated labels are:\n-+\nwolof
         )
         df.index.name = "index"
         reader = lambda x: read_stata(x).set_index("index")
-        result = tm.round_trip_pathlib(df.to_stata, reader)
+        result = tm.round_trip_pathlib(df.to_stata, reader, temp_file)
         tm.assert_frame_equal(df, result)
 
     @pytest.mark.parametrize("write_index", [True, False])
@@ -1838,6 +1846,24 @@ The repeated labels are:\n-+\nwolof
         msg = "convert_dates key must be a column or an integer"
         with pytest.raises(ValueError, match=msg):
             original.to_stata(path, convert_dates={"wrong_name": "tc"})
+
+    def test_convert_dates_with_renamed_columns(self, temp_file):
+        # GH#60536 - convert_dates should not raise when a different column
+        # is renamed for Stata compatibility
+        df = DataFrame(
+            {
+                "1bad_name": [1, 2, 3],
+                "date_col": pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]),
+            }
+        )
+        path = temp_file
+        msg = "Not all pandas column names were valid Stata variable names"
+        with tm.assert_produces_warning(InvalidColumnName, match=msg):
+            df.to_stata(path, convert_dates={"date_col": "td"})
+
+        result = self.read_dta(path)
+        assert "_1bad_name" in result.columns
+        assert "date_col" in result.columns
 
     @pytest.mark.parametrize("version", [114, 117, 118, 119, None])
     def test_nonfile_writing(self, version, temp_file):
@@ -2056,9 +2082,10 @@ the string values returned are correct."""
         ["numpy_nullable", pytest.param("pyarrow", marks=td.skip_if_no("pyarrow"))],
     )
     def test_read_write_ea_dtypes(self, dtype_backend, temp_file, tmp_path):
+        dtype = "Int64" if dtype_backend == "numpy_nullable" else "int64[pyarrow]"
         df = DataFrame(
             {
-                "a": [1, 2, None],
+                "a": pd.array([1, 2, None], dtype=dtype),
                 "b": ["a", "b", "c"],
                 "c": [True, False, None],
                 "d": [1.5, 2.5, 3.5],
@@ -2617,3 +2644,13 @@ def test_ascii_error(temp_file, version):
     df.to_stata(temp_file, write_index=0, version=version)
     df_input = read_stata(temp_file)
     tm.assert_frame_equal(df, df_input)
+
+
+def test_stata_v117_prefix_with_unsupported_version_raises_version_error():
+    # _read_new_header reads 27 bytes, then the next 3 are the release digits
+    buf = io.BytesIO(b"<stata_dta><header><release>999</release>" + b"\x00" * 64)
+    with pytest.raises(
+        ValueError,
+        match=r"either not a valid Stata dataset.*\(detected:\s*999\)",
+    ):
+        read_stata(buf)

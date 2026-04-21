@@ -38,7 +38,8 @@ def generate_apply_looper(func, decorator: Callable):
         res0 = nb_compat_func(first_elem, *args)
         # Use np.asarray to get shape for
         # https://github.com/numba/numba/issues/4202#issuecomment-1185981507
-        buf_shape = (dim0,) + np.atleast_1d(np.asarray(res0)).shape
+        # Use tuple concatenation; numba doesn't support tuple unpacking syntax
+        buf_shape = (dim0,) + np.atleast_1d(np.asarray(res0)).shape  # noqa: RUF005
         if axis == 0:
             buf_shape = buf_shape[::-1]
         buff = np.empty(buf_shape)
@@ -57,7 +58,7 @@ def generate_apply_looper(func, decorator: Callable):
 
 
 @functools.cache
-def make_looper(func, result_dtype, is_grouped_kernel, nopython, nogil, parallel):
+def make_looper(func, result_dtype, is_grouped_kernel, nogil: bool, parallel: bool):
     if TYPE_CHECKING:
         import numba
     else:
@@ -65,8 +66,8 @@ def make_looper(func, result_dtype, is_grouped_kernel, nopython, nogil, parallel
 
     if is_grouped_kernel:
 
-        @numba.jit(nopython=nopython, nogil=nogil, parallel=parallel)
-        def column_looper(
+        @numba.jit(nogil=nogil, parallel=parallel)
+        def column_looper(  # pyright: ignore[reportRedeclaration]
             values: np.ndarray,
             labels: np.ndarray,
             ngroups: int,
@@ -86,8 +87,12 @@ def make_looper(func, result_dtype, is_grouped_kernel, nopython, nogil, parallel
 
     else:
 
-        @numba.jit(nopython=nopython, nogil=nogil, parallel=parallel)
-        def column_looper(
+        @numba.jit(nogil=nogil, parallel=parallel)
+        # error: Incompatible redefinition (redefinition with type
+        # "Callable[[ndarray[Any, Any], ndarray[Any, Any], ndarray[Any, Any],
+        # int, VarArg(Any)], Any]", original type "Callable[[ndarray[Any, Any],
+        # ndarray[Any, Any], int, int, VarArg(Any)], Any]")
+        def column_looper(  # type: ignore[misc]
             values: np.ndarray,
             start: np.ndarray,
             end: np.ndarray,
@@ -161,7 +166,6 @@ def generate_shared_aggregator(
     func: Callable[..., Scalar],
     dtype_mapping: dict[np.dtype, np.dtype],
     is_grouped_kernel: bool,
-    nopython: bool,
     nogil: bool,
     parallel: bool,
 ):
@@ -181,8 +185,6 @@ def generate_shared_aggregator(
         or using starts/ends arrays
 
         If true, you also need to pass the number of groups to this function
-    nopython : bool
-        nopython to be passed into numba.jit
     nogil : bool
         nogil to be passed into numba.jit
     parallel : bool
@@ -194,12 +196,10 @@ def generate_shared_aggregator(
     """
 
     # A wrapper around the looper function,
-    # to dispatch based on dtype since numba is unable to do that in nopython mode
+    # to dispatch based on dtype
 
     # It also post-processes the values by inserting nans where number of observations
     # is less than min_periods
-    # Cannot do this in numba nopython mode
-    # (you'll run into type-unification error when you cast int -> float)
     def looper_wrapper(
         values,
         start=None,
@@ -211,16 +211,24 @@ def generate_shared_aggregator(
     ):
         result_dtype = dtype_mapping[values.dtype]
         column_looper = make_looper(
-            func, result_dtype, is_grouped_kernel, nopython, nogil, parallel
+            func, result_dtype, is_grouped_kernel, nogil, parallel
         )
         # Need to unpack kwargs since numba only supports *args
         if is_grouped_kernel:
             result, na_positions = column_looper(
-                values, labels, ngroups, min_periods, *kwargs.values()
+                values,
+                labels,  # pyright: ignore[reportArgumentType]
+                ngroups,  # pyright: ignore[reportArgumentType]
+                min_periods,
+                *kwargs.values(),
             )
         else:
             result, na_positions = column_looper(
-                values, start, end, min_periods, *kwargs.values()
+                values,
+                start,  # pyright: ignore[reportArgumentType]
+                end,  # pyright: ignore[reportArgumentType]
+                min_periods,
+                *kwargs.values(),
             )
         if result.dtype.kind == "i":
             # Look if na_positions is not empty

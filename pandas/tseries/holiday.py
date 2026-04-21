@@ -4,7 +4,11 @@ from datetime import (
     datetime,
     timedelta,
 )
-from typing import TYPE_CHECKING
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    overload,
+)
 import warnings
 
 from dateutil.relativedelta import (
@@ -281,6 +285,17 @@ class Holiday:
         repr = f"Holiday: {self.name} ({info})"
         return repr
 
+    @overload
+    def dates(self, start_date, end_date, return_name: Literal[True]) -> Series: ...
+
+    @overload
+    def dates(
+        self, start_date, end_date, return_name: Literal[False]
+    ) -> DatetimeIndex: ...
+
+    @overload
+    def dates(self, start_date, end_date) -> DatetimeIndex: ...
+
     def dates(
         self, start_date, end_date, return_name: bool = False
     ) -> Series | DatetimeIndex:
@@ -319,8 +334,7 @@ class Holiday:
         if self.days_of_week is not None:
             holiday_dates = holiday_dates[
                 np.isin(
-                    # error: "DatetimeIndex" has no attribute "dayofweek"
-                    holiday_dates.dayofweek,  # type: ignore[attr-defined]
+                    holiday_dates.day_of_week,
                     self.days_of_week,
                 ).ravel()
             ]
@@ -395,7 +409,7 @@ class Holiday:
             return dates.copy()
 
         if self.observance is not None:
-            return dates.map(lambda d: self.observance(d))
+            return dates.map(lambda d: self.observance(d))  # type: ignore[return-value, misc]  # pyright: ignore[reportOptionalCall]
 
         if self.offset is not None:
             if not isinstance(self.offset, list):
@@ -411,7 +425,7 @@ class Holiday:
         return dates
 
 
-holiday_calendars = {}
+holiday_calendars: dict[str, type[AbstractHolidayCalendar]] = {}
 
 
 def register(cls) -> None:
@@ -449,7 +463,7 @@ class AbstractHolidayCalendar(metaclass=HolidayCalendarMetaClass):
     rules: list[Holiday] = []
     start_date = Timestamp(datetime(1970, 1, 1))
     end_date = Timestamp(datetime(2200, 12, 31))
-    _cache = None
+    _cache: tuple[Timestamp, Timestamp, Series] | None = None
 
     def __init__(self, name: str = "", rules=None) -> None:
         """
@@ -478,7 +492,9 @@ class AbstractHolidayCalendar(metaclass=HolidayCalendarMetaClass):
 
         return None
 
-    def holidays(self, start=None, end=None, return_name: bool = False):
+    def holidays(
+        self, start=None, end=None, return_name: bool = False
+    ) -> DatetimeIndex | Series:
         """
         Returns a curve with holidays between start_date and end_date
 
@@ -515,14 +531,9 @@ class AbstractHolidayCalendar(metaclass=HolidayCalendarMetaClass):
                 rule.dates(start, end, return_name=True) for rule in self.rules
             ]
             if pre_holidays:
-                # error: Argument 1 to "concat" has incompatible type
-                # "List[Union[Series, DatetimeIndex]]"; expected
-                # "Union[Iterable[DataFrame], Mapping[<nothing>, DataFrame]]"
-                holidays = concat(pre_holidays)  # type: ignore[arg-type]
+                holidays = concat(pre_holidays)
             else:
-                # error: Incompatible types in assignment (expression has type
-                # "Series", variable has type "DataFrame")
-                holidays = Series(index=DatetimeIndex([]), dtype=object)  # type: ignore[assignment]
+                holidays = Series(index=DatetimeIndex([]), dtype=object)
 
             self._cache = (start, end, holidays.sort_index())
 

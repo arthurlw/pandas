@@ -30,6 +30,11 @@ from pandas._libs.tslibs.timezones import (
     tz_compare,
 )
 from pandas.compat import IS64
+from pandas.compat.numpy import (
+    is_numpy_dev,
+    np_version_gt2_5,
+)
+from pandas.errors import Pandas4Warning
 
 from pandas import (
     NaT,
@@ -47,7 +52,6 @@ class TestTimestampProperties:
         freq = to_offset("B")
 
         ts = Timestamp("2017-10-01")
-        assert ts.dayofweek == 6
         assert ts.day_of_week == 6
         assert ts.is_month_start  # not a weekday
         assert not freq.is_month_start(ts)
@@ -56,7 +60,6 @@ class TestTimestampProperties:
         assert freq.is_quarter_start(ts + Timedelta(days=1))
 
         ts = Timestamp("2017-09-30")
-        assert ts.dayofweek == 5
         assert ts.day_of_week == 5
         assert ts.is_month_end
         assert not freq.is_month_end(ts)
@@ -64,6 +67,22 @@ class TestTimestampProperties:
         assert ts.is_quarter_end
         assert not freq.is_quarter_end(ts)
         assert freq.is_quarter_end(ts - Timedelta(days=1))
+
+    @pytest.mark.parametrize(
+        "old_attr, new_attr",
+        [
+            ("dayofweek", "day_of_week"),
+            ("dayofyear", "day_of_year"),
+            ("daysinmonth", "days_in_month"),
+        ],
+    )
+    def test_deprecated_day_attrs(self, old_attr, new_attr):
+        # GH#46768
+        ts = Timestamp("2020-03-14")
+        msg = f"Timestamp.{old_attr} is deprecated"
+        with tm.assert_produces_warning(Pandas4Warning, match=msg):
+            old_val = getattr(ts, old_attr)
+        assert old_val == getattr(ts, new_attr)
 
     @pytest.mark.parametrize(
         "attr, expected",
@@ -76,13 +95,11 @@ class TestTimestampProperties:
             ["second", 0],
             ["microsecond", 0],
             ["nanosecond", 0],
-            ["dayofweek", 2],
             ["day_of_week", 2],
             ["quarter", 4],
-            ["dayofyear", 365],
             ["day_of_year", 365],
             ["week", 1],
-            ["daysinmonth", 31],
+            ["days_in_month", 31],
         ],
     )
     @pytest.mark.parametrize("tz", [None, "US/Eastern"])
@@ -118,10 +135,9 @@ class TestTimestampProperties:
 
     # GH 12806
     @pytest.mark.parametrize("tz", [None, "EST"])
-    # error: Unsupported operand types for + ("List[None]" and "List[str]")
     @pytest.mark.parametrize(
         "time_locale",
-        [None] + tm.get_locales(),  # type: ignore[operator]
+        [None, *tm.get_locales()],
     )
     def test_names(self, tz, time_locale):
         # GH 17354
@@ -239,6 +255,7 @@ class TestTimestampProperties:
         dow = ts.weekday()
         assert dow == expected
 
+    @pytest.mark.slow
     @given(
         ts=st.datetimes(),
         sign=st.sampled_from(["-", ""]),
@@ -268,7 +285,7 @@ class TestTimestamp:
 
     def test_default_to_stdlib_utc(self):
         msg = "Timestamp.utcnow is deprecated"
-        with tm.assert_produces_warning(FutureWarning, match=msg):
+        with tm.assert_produces_warning(Pandas4Warning, match=msg):
             assert Timestamp.utcnow().tz is timezone.utc
         assert Timestamp.now("UTC").tz is timezone.utc
         assert Timestamp("2016-01-01", tz="UTC").tz is timezone.utc
@@ -313,13 +330,13 @@ class TestTimestamp:
         compare(Timestamp.now("UTC"), datetime.now(timezone.utc))
         compare(Timestamp.now("UTC"), datetime.now(tzutc()))
         msg = "Timestamp.utcnow is deprecated"
-        with tm.assert_produces_warning(FutureWarning, match=msg):
+        with tm.assert_produces_warning(Pandas4Warning, match=msg):
             compare(Timestamp.utcnow(), datetime.now(timezone.utc))
         compare(Timestamp.today(), datetime.today())
         current_time = calendar.timegm(datetime.now().utctimetuple())
 
         msg = "Timestamp.utcfromtimestamp is deprecated"
-        with tm.assert_produces_warning(FutureWarning, match=msg):
+        with tm.assert_produces_warning(Pandas4Warning, match=msg):
             ts_utc = Timestamp.utcfromtimestamp(current_time)
         assert ts_utc.timestamp() == current_time
         compare(
@@ -365,11 +382,11 @@ class TestTimestamp:
         # further test accessors
         base = Timestamp("20140101 00:00:00").as_unit("ns")
 
-        result = Timestamp(base._value + Timedelta("5ms")._value)
+        result = Timestamp(base._value + Timedelta("5ms").value)
         assert result == Timestamp(f"{base}.005000")
         assert result.microsecond == 5000
 
-        result = Timestamp(base._value + Timedelta("5us")._value)
+        result = Timestamp(base._value + Timedelta("5us").value)
         assert result == Timestamp(f"{base}.000005")
         assert result.microsecond == 5
 
@@ -378,11 +395,11 @@ class TestTimestamp:
         assert result.nanosecond == 5
         assert result.microsecond == 0
 
-        result = Timestamp(base._value + Timedelta("6ms 5us")._value)
+        result = Timestamp(base._value + Timedelta("6ms 5us").value)
         assert result == Timestamp(f"{base}.006005")
         assert result.microsecond == 5 + 6 * 1000
 
-        result = Timestamp(base._value + Timedelta("200ms 5us")._value)
+        result = Timestamp(base._value + Timedelta("200ms 5us").value)
         assert result == Timestamp(f"{base}.200005")
         assert result.microsecond == 5 + 200 * 1000
 
@@ -639,11 +656,13 @@ class TestNonNano:
 
         # subtracting 3600*24 gives a datetime64 that _can_ fit inside the
         #  nanosecond implementation bounds.
-        other = Timestamp(dt64 - 3600 * 24).as_unit("ns")
+        other = Timestamp(dt64 - np.timedelta64(3600 * 24, "s")).as_unit("ns")
         assert other < ts
-        assert other.asm8 > ts.asm8  # <- numpy gets this wrong
+        if not is_numpy_dev and not np_version_gt2_5:
+            assert other.asm8 > ts.asm8  # <- numpy gets this wrong
         assert ts > other
-        assert ts.asm8 < other.asm8  # <- numpy gets this wrong
+        if not is_numpy_dev and not np_version_gt2_5:
+            assert ts.asm8 < other.asm8  # <- numpy gets this wrong
         assert not other == ts
         assert ts != other
 
@@ -655,11 +674,11 @@ class TestNonNano:
 
         assert other.asm8 < ts
 
-    def test_pickle(self, ts, tz_aware_fixture):
+    def test_pickle(self, ts, tz_aware_fixture, temp_file):
         tz = tz_aware_fixture
         tz = maybe_get_tz(tz)
         ts = Timestamp._from_value_and_reso(ts._value, ts._creso, tz)
-        rt = tm.round_trip_pickle(ts)
+        rt = tm.round_trip_pickle(ts, temp_file)
         assert rt._creso == ts._creso
         assert rt == ts
 

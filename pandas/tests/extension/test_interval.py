@@ -31,11 +31,13 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-def make_data():
-    N = 100
-    left_array = np.random.default_rng(2).uniform(size=N).cumsum()
-    right_array = left_array + np.random.default_rng(2).uniform(size=N)
-    return [Interval(left, right) for left, right in zip(left_array, right_array)]
+def make_data(n: int):
+    left_array = np.random.default_rng(2).uniform(size=n).cumsum()
+    right_array = left_array + np.random.default_rng(2).uniform(size=n)
+    return [
+        Interval(left, right)
+        for left, right in zip(left_array, right_array, strict=True)
+    ]
 
 
 @pytest.fixture
@@ -45,8 +47,8 @@ def dtype():
 
 @pytest.fixture
 def data():
-    """Length-100 PeriodArray for semantics test."""
-    return IntervalArray(make_data())
+    """Length-10 IntervalArray for semantics test."""
+    return IntervalArray(make_data(10))
 
 
 @pytest.fixture
@@ -81,8 +83,11 @@ def data_for_grouping():
 class TestIntervalArray(base.ExtensionTests):
     divmod_exc = TypeError
 
+    def _honors_copy_keyword(self, data) -> bool:
+        return False
+
     def _supports_reduction(self, ser: pd.Series, op_name: str) -> bool:
-        return op_name in ["min", "max"]
+        return op_name in ["min", "max", "count"]
 
     def test_fillna_limit_frame(self, data_missing):
         # GH#58001
@@ -126,9 +131,9 @@ class TestIntervalArray(base.ExtensionTests):
     def test_astype_str(self, data):
         super().test_astype_str(data)
 
-
-# TODO: either belongs in tests.arrays.interval or move into base tests.
-def test_fillna_non_scalar_raises(data_missing):
-    msg = "can only insert Interval objects and NA into an IntervalArray"
-    with pytest.raises(TypeError, match=msg):
-        data_missing.fillna([1, 1])
+    @pytest.mark.xfail(
+        reason="Test is invalid for IntervalDtype, needs to be adapted for "
+        "this dtype with an index with index._index_as_unique."
+    )
+    def test_loc_setitem_with_expansion_preserves_ea_index_dtype(self, data):
+        super().test_loc_setitem_with_expansion_preserves_ea_index_dtype(data)

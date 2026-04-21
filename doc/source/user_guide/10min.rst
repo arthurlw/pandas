@@ -318,7 +318,9 @@ Setting a new column automatically aligns the data by the indexes:
 
 .. ipython:: python
 
-   s1 = pd.Series([1, 2, 3, 4, 5, 6], index=pd.date_range("20130102", periods=6))
+   s1 = pd.Series(
+      [1, 2, 3, 4, 5, 6],
+      index=pd.date_range("20130102", periods=6))
    s1
    df["F"] = s1
 
@@ -545,6 +547,8 @@ groups:
 .. ipython:: python
 
    df.groupby("A")[["C", "D"]].sum()
+
+The unique values of the grouped column now form the index of the result.
 
 Grouping by multiple columns label forms :class:`MultiIndex`.
 

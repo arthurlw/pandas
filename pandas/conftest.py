@@ -109,6 +109,28 @@ def pytest_addoption(parser) -> None:
     )
 
 
+def pytest_sessionstart(session):
+    import doctest
+    import inspect
+
+    # https://github.com/pandas-dev/pandas/pull/62988
+    # When we modify the __module__ of a class, the __module__ on the methods
+    # of that class do not change. When these two disagree, doctests would not
+    # typically run. We hack `DocTestFinder` to avoid this.
+    orig = doctest.DocTestFinder._from_module  # type: ignore[attr-defined]
+
+    def _from_module(self, module, object):
+        # When . is in __qualname__, object is a method of a class.
+        if inspect.isfunction(object) and "." in object.__qualname__:
+            # We only get here when the class that the method is on is from the
+            # appropriate module. So ignore checking the __module__ of the method
+            # itself and run the doctest.
+            return True
+        return orig(self, module, object)
+
+    doctest.DocTestFinder._from_module = _from_module  # type: ignore[attr-defined]
+
+
 def ignore_doctest_warning(item: pytest.Item, path: str, message: str) -> None:
     """Ignore doctest warning.
 
@@ -135,12 +157,15 @@ def pytest_collection_modifyitems(items, config) -> None:
     # Warnings from doctests that can be ignored; place reason in comment above.
     # Each entry specifies (path, message) - see the ignore_doctest_warning function
     ignored_doctest_warnings = [
+        ("api.interchange.from_dataframe", "The DataFrame Interchange Protocol"),
         ("is_int64_dtype", "is_int64_dtype is deprecated"),
         ("is_interval_dtype", "is_interval_dtype is deprecated"),
         ("is_period_dtype", "is_period_dtype is deprecated"),
         ("is_datetime64tz_dtype", "is_datetime64tz_dtype is deprecated"),
         ("is_categorical_dtype", "is_categorical_dtype is deprecated"),
         ("is_sparse", "is_sparse is deprecated"),
+        ("CategoricalDtype._from_values_or_dtype", "Constructing a Categorical"),
+        ("DataFrame.__dataframe__", "The DataFrame Interchange Protocol"),
         ("DataFrameGroupBy.fillna", "DataFrameGroupBy.fillna is deprecated"),
         ("DataFrameGroupBy.corrwith", "DataFrameGroupBy.corrwith is deprecated"),
         ("NDFrame.replace", "Series.replace without 'value'"),
@@ -152,6 +177,9 @@ def pytest_collection_modifyitems(items, config) -> None:
         ("SeriesGroupBy.idxmax", "The behavior of Series.idxmax"),
         ("to_pytimedelta", "The behavior of TimedeltaProperties.to_pytimedelta"),
         ("NDFrame.reindex_like", "keyword argument 'method' is deprecated"),
+        # Docstring divides by zero to show nan result
+        ("Series.autocorr", "invalid value encountered in divide"),
+        ("Series.corr", "invalid value encountered in divide"),
         # Docstring divides by zero to show behavior difference
         ("missing.mask_zero_div_zero", "divide by zero encountered"),
         (
@@ -168,6 +196,8 @@ def pytest_collection_modifyitems(items, config) -> None:
             "DataFrameGroupBy.fillna with 'method' is deprecated",
         ),
         ("read_parquet", "Passing a BlockManager to DataFrame is deprecated"),
+        ("Timestamp.utcfromtimestamp", "Timestamp.utcfromtimestamp is deprecated"),
+        ("BaseOffset.name.__get__", "The 'name' property is deprecated"),
     ]
 
     if is_doctest:
@@ -176,25 +206,19 @@ def pytest_collection_modifyitems(items, config) -> None:
                 ignore_doctest_warning(item, path, message)
 
 
-hypothesis_health_checks = [
-    hypothesis.HealthCheck.too_slow,
-    hypothesis.HealthCheck.differing_executors,
-]
-
-# Hypothesis
+# Similar to "ci" config in
+# https://hypothesis.readthedocs.io/en/latest/reference/api.html#built-in-profiles
 hypothesis.settings.register_profile(
-    "ci",
-    # Hypothesis timing checks are tuned for scalars by default, so we bump
-    # them from 200ms to 500ms per test case as the global default.  If this
-    # is too short for a specific test, (a) try to make it faster, and (b)
-    # if it really is slow add `@settings(deadline=...)` with a working value,
-    # or `deadline=None` to entirely disable timeouts for that test.
-    # 2022-02-09: Changed deadline from 500 -> None. Deadline leads to
-    # non-actionable, flaky CI failures (# GH 24641, 44969, 45118, 44969)
+    "pandas_ci",
+    database=None,
     deadline=None,
-    suppress_health_check=tuple(hypothesis_health_checks),
+    max_examples=15,
+    suppress_health_check=(
+        hypothesis.HealthCheck.too_slow,
+        hypothesis.HealthCheck.differing_executors,
+    ),
 )
-hypothesis.settings.load_profile("ci")
+hypothesis.settings.load_profile("pandas_ci")
 
 # Registering these strategies makes them globally available via st.from_type,
 # which is use for offsets in tests/tseries/offsets/test_offsets_properties.py
@@ -413,7 +437,7 @@ def na_action(request):
 @pytest.fixture(params=[True, False])
 def ascending(request):
     """
-    Fixture for 'na_action' argument in sort_values/sort_index/rank.
+    Fixture for 'ascending' argument in sort_values/sort_index/rank.
     """
     return request.param
 
@@ -450,7 +474,7 @@ def parallel(request):
     return request.param
 
 
-# Can parameterize nogil & nopython over True | False, but limiting per
+# Can parameterize nogil over True | False, but limiting per
 # https://github.com/pandas-dev/pandas/pull/41971#issuecomment-860607472
 
 
@@ -458,14 +482,6 @@ def parallel(request):
 def nogil(request):
     """
     Fixture for nogil keyword argument for numba.jit.
-    """
-    return request.param
-
-
-@pytest.fixture(params=[True])
-def nopython(request):
-    """
-    Fixture for nopython keyword argument for numba.jit.
     """
     return request.param
 
@@ -695,9 +711,12 @@ indices_dict = {
     "categorical": CategoricalIndex(list("abcd") * 2),
     "interval": IntervalIndex.from_breaks(np.linspace(0, 100, num=11)),
     "empty": Index([]),
-    "tuples": MultiIndex.from_tuples(zip(["foo", "bar", "baz"], [1, 2, 3])),
+    "tuples": MultiIndex.from_tuples(
+        zip(["foo", "bar", "baz"], [1, 2, 3], strict=True)
+    ),
     "mi-with-dt64tz-level": _create_mi_with_dt64tz_level(),
     "multi": _create_multiindex(),
+    "mixed-int-string": Index([0, "a", 1, "b", 2, "c"]),
     "repeats": Index([0, 0, 1, 1, 2, 2]),
     "nullable_int": Index(np.arange(10), dtype="Int64"),
     "nullable_uint": Index(np.arange(10), dtype="UInt16"),
@@ -724,7 +743,15 @@ def index(request):
         - ...
     """
     # copy to avoid mutation, e.g. setting .name
-    return indices_dict[request.param].copy()
+    return indices_dict[request.param].copy(deep=False)
+
+
+@pytest.fixture(params=[key for key in indices_dict if key != "mixed-int-string"])
+def index_sortable(request):
+    """
+    index fixture, but excluding types that are not orderable.
+    """
+    return indices_dict[request.param].copy(deep=False)
 
 
 @pytest.fixture(
@@ -737,7 +764,21 @@ def index_flat(request):
     index fixture, but excluding MultiIndex cases.
     """
     key = request.param
-    return indices_dict[key].copy()
+    return indices_dict[key].copy(deep=False)
+
+
+@pytest.fixture(
+    params=[
+        key
+        for key, value in indices_dict.items()
+        if not isinstance(value, MultiIndex) and key != "mixed-int-string"
+    ]
+)
+def index_flat_sortable(request):
+    """
+    index_flat fixture, but excluding types that are not orderable.
+    """
+    return indices_dict[request.param].copy(deep=False)
 
 
 @pytest.fixture(
@@ -760,21 +801,40 @@ def index_with_missing(request):
 
     MultiIndex is excluded because isna() is not defined for MultiIndex.
     """
-
-    # GH 35538. Use deep copy to avoid illusive bug on np-dev
-    # GHA pipeline that writes into indices_dict despite copy
-    ind = indices_dict[request.param].copy(deep=True)
-    vals = ind.values.copy()
+    ind = indices_dict[request.param]
     if request.param in ["tuples", "mi-with-dt64tz-level", "multi"]:
         # For setting missing values in the top level of MultiIndex
         vals = ind.tolist()
-        vals[0] = (None,) + vals[0][1:]
-        vals[-1] = (None,) + vals[-1][1:]
+        vals[0] = (None, *vals[0][1:])
+        vals[-1] = (None, *vals[-1][1:])
         return MultiIndex.from_tuples(vals)
     else:
+        vals = ind.values.copy()
         vals[0] = None
         vals[-1] = None
-        return type(ind)(vals)
+        return type(ind)(vals, copy=False)
+
+
+@pytest.fixture(
+    params=[
+        key
+        for key, value in indices_dict.items()
+        if not (
+            key.startswith(("int", "uint", "float"))
+            or key in ["range", "empty", "repeats", "bool-dtype", "mixed-int-string"]
+        )
+        and not isinstance(value, MultiIndex)
+    ]
+)
+def index_with_missing_sortable(request):
+    """
+    index_with_missing fixture, but excluding types that are not orderable.
+    """
+    ind = indices_dict[request.param]
+    vals = ind.values.copy()
+    vals[0] = None
+    vals[-1] = None
+    return type(ind)(vals, copy=False)
 
 
 # ----------------------------------------------------------------
@@ -852,7 +912,22 @@ def index_or_series_obj(request):
     Fixture for tests on indexes, series and series with a narrow dtype
     copy to avoid mutation, e.g. setting .name
     """
-    return _index_or_series_objs[request.param].copy(deep=True)
+    return _index_or_series_objs[request.param].copy(deep=False)
+
+
+_index_or_series_objs_orderable = {
+    key: value
+    for key, value in _index_or_series_objs.items()
+    if "mixed-int-string" not in key
+}
+
+
+@pytest.fixture(params=_index_or_series_objs_orderable.keys())
+def index_or_series_obj_orderable(request):
+    """
+    index_or_series_obj fixture, but excluding types that are not orderable.
+    """
+    return _index_or_series_objs_orderable[request.param].copy(deep=False)
 
 
 _typ_objects_series = {
@@ -875,7 +950,7 @@ def index_or_series_memory_obj(request):
     series with empty objects type
     copy to avoid mutation, e.g. setting .name
     """
-    return _index_or_series_memory_objs[request.param].copy(deep=True)
+    return _index_or_series_memory_objs[request.param].copy(deep=False)
 
 
 # ----------------------------------------------------------------
@@ -940,10 +1015,10 @@ def rand_series_with_duplicate_datetimeindex() -> Series:
         (Period("2012-01", freq="M"), "period[M]"),
         (Period("2012-02-01", freq="D"), "period[D]"),
         (
-            Timestamp("2011-01-01", tz="US/Eastern"),
+            Timestamp("2011-01-01", tz="US/Eastern").as_unit("s"),
             DatetimeTZDtype(unit="s", tz="US/Eastern"),
         ),
-        (Timedelta(seconds=500), "timedelta64[ns]"),
+        (Timedelta(seconds=500), "timedelta64[us]"),
     ]
 )
 def ea_scalar_and_dtype(request):
@@ -1451,6 +1526,9 @@ def any_string_dtype(request):
         return pd.StringDtype(storage, na_value)
 
 
+any_string_dtype2 = any_string_dtype
+
+
 @pytest.fixture(params=tm.DATETIME64_DTYPES)
 def datetime64_dtype(request):
     """
@@ -1880,7 +1958,9 @@ _any_skipna_inferred_dtype = [
     ("period", [Period(2013), pd.NaT, Period(2018)]),
     ("interval", [Interval(0, 1), np.nan, Interval(0, 2)]),
 ]
-ids, _ = zip(*_any_skipna_inferred_dtype)  # use inferred type as fixture-id
+ids = [
+    pair[0] for pair in _any_skipna_inferred_dtype
+]  # use inferred type as fixture-id
 
 
 @pytest.fixture(params=_any_skipna_inferred_dtype, ids=ids)
@@ -1944,11 +2024,14 @@ def ip():
     pytest.importorskip("IPython", minversion="6.0.0")
     from IPython.core.interactiveshell import InteractiveShell
 
-    # GH#35711 make sure sqlite history file handle is not leaked
+    # GH#35711 make sure sqlite history file handle is not leaked.
+    # Using :memory: avoids leaking a file on disk; disabling the history
+    # manager entirely avoids leaking the underlying sqlite3.Connection.
     from traitlets.config import Config  # isort:skip
 
     c = Config()
     c.HistoryManager.hist_file = ":memory:"
+    c.HistoryManager.enabled = False
 
     return InteractiveShell(config=c)
 
@@ -2094,6 +2177,11 @@ def using_infer_string() -> bool:
     return pd.options.future.infer_string is True
 
 
+@pytest.fixture
+def using_python_scalars() -> bool:
+    return pd.options.future.python_scalars is True
+
+
 _warsaws: list[Any] = ["Europe/Warsaw", "dateutil/Europe/Warsaw"]
 if pytz is not None:
     _warsaws.append(pytz.timezone("Europe/Warsaw"))
@@ -2122,3 +2210,10 @@ def temp_file(tmp_path):
 def monkeysession():
     with pytest.MonkeyPatch.context() as mp:
         yield mp
+
+
+@pytest.fixture(params=[True, False])
+def using_nan_is_na(request):
+    opt = request.param
+    with pd.option_context("future.distinguish_nan_and_na", not opt):
+        yield opt

@@ -46,6 +46,17 @@ class TestGetIndexer:
         expected = np.array([-1, 2, -1, -1, 1, -1, -1, 0, -1], dtype=np.intp)
         tm.assert_numpy_array_equal(result, expected)
 
+    def test_get_indexer_missing_value_casting_string_dtype(self):
+        # GH#55833
+        idx = Index(["a", "b", None])
+        result = idx.get_indexer([None])
+        expected = np.array([2], dtype=np.intp)
+        tm.assert_numpy_array_equal(result, expected)
+
+        result = idx.get_indexer([None, True])
+        expected = np.array([2, -1], dtype=np.intp)
+        tm.assert_numpy_array_equal(result, expected)
+
 
 class TestTake:
     def test_take_preserve_name(self):
@@ -89,26 +100,26 @@ class TestTake:
 
         # no errors
         result = idx.take(np.array([1, -3]))
-        expected = Index([2, 1], dtype=np.int64, name="xxx")
-        tm.assert_index_equal(result, expected)
+        expected = RangeIndex(start=2, stop=0, step=-1, name="xxx")
+        tm.assert_index_equal(result, expected, exact=True)
 
     def test_take_accepts_empty_array(self):
         idx = RangeIndex(1, 4, name="foo")
         result = idx.take(np.array([]))
-        expected = Index([], dtype=np.int64, name="foo")
-        tm.assert_index_equal(result, expected)
+        expected = RangeIndex(start=0, stop=0, step=1, name="foo")
+        tm.assert_index_equal(result, expected, exact=True)
 
         # empty index
         idx = RangeIndex(0, name="foo")
         result = idx.take(np.array([]))
-        expected = Index([], dtype=np.int64, name="foo")
-        tm.assert_index_equal(result, expected)
+        expected = RangeIndex(start=0, stop=0, step=1, name="foo")
+        tm.assert_index_equal(result, expected, exact=True)
 
     def test_take_accepts_non_int64_array(self):
         idx = RangeIndex(1, 4, name="foo")
         result = idx.take(np.array([2, 1], dtype=np.uint32))
-        expected = Index([3, 2], dtype=np.int64, name="foo")
-        tm.assert_index_equal(result, expected)
+        expected = RangeIndex(start=3, stop=1, step=-1, name="foo")
+        tm.assert_index_equal(result, expected, exact=True)
 
     def test_take_when_index_has_step(self):
         idx = RangeIndex(1, 11, 3, name="foo")  # [1, 4, 7, 10]

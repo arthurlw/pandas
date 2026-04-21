@@ -238,7 +238,7 @@ class BaseComparisonOpsTests(BaseOpsUtil):
 
     def test_compare_scalar(self, data, comparison_op):
         ser = pd.Series(data)
-        self._compare_other(ser, data, comparison_op, 0)
+        self._compare_other(ser, data, comparison_op, data[0])
 
     def test_compare_array(self, data, comparison_op):
         ser = pd.Series(data)
@@ -250,9 +250,7 @@ class BaseUnaryOpsTests(BaseOpsUtil):
     def test_invert(self, data):
         ser = pd.Series(data, name="name")
         try:
-            # 10 is an arbitrary choice here, just avoid iterating over
-            #  the whole array to trim test runtime
-            [~x for x in data[:10]]
+            [~x for x in data]
         except TypeError:
             # scalars don't support invert -> we don't expect the vectorized
             #  operation to succeed

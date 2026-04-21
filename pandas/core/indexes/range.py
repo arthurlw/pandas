@@ -4,6 +4,7 @@ from collections.abc import (
     Callable,
     Hashable,
     Iterator,
+    Sequence,
 )
 from datetime import timedelta
 import operator
@@ -12,6 +13,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
+    Self,
     cast,
     overload,
 )
@@ -26,7 +28,6 @@ from pandas._libs.lib import no_default
 from pandas.compat.numpy import function as nv
 from pandas.util._decorators import (
     cache_readonly,
-    doc,
     set_module,
 )
 
@@ -54,12 +55,14 @@ from pandas.core.ops.common import unpack_zerodim_and_defer
 
 if TYPE_CHECKING:
     from pandas._typing import (
+        ArrayLike,
+        Axes,
         Axis,
+        AxisInt,
         Dtype,
         JoinHow,
         NaPosition,
         NumpySorter,
-        Self,
         npt,
     )
 
@@ -89,13 +92,13 @@ class RangeIndex(Index):
 
     Parameters
     ----------
-    start : int (default: 0), range, or other RangeIndex instance
+    start : int, range, or other RangeIndex instance, default None
         If int and "stop" is not given, interpreted as "stop" instead.
-    stop : int (default: 0)
+    stop : int, default None
         The end value of the range (exclusive).
-    step : int (default: 1)
+    step : int, default None
         The step size of the range.
-    dtype : np.int64
+    dtype : np.int64, default None
         Unused, accepted for homogeneity with other index types.
     copy : bool, default False
         Unused, accepted for homogeneity with other index types.
@@ -151,9 +154,9 @@ class RangeIndex(Index):
 
     def __new__(
         cls,
-        start=None,
-        stop=None,
-        step=None,
+        start: int | np.integer | range | RangeIndex | None = None,
+        stop: int | np.integer | None = None,
+        step: int | np.integer | None = None,
         dtype: Dtype | None = None,
         copy: bool = False,
         name: Hashable | None = None,
@@ -171,7 +174,7 @@ class RangeIndex(Index):
         if com.all_none(start, stop, step):
             raise TypeError("RangeIndex(...) must be called with integers")
 
-        start = ensure_python_int(start) if start is not None else 0
+        start = ensure_python_int(start) if start is not None else 0  # type: ignore[arg-type]
 
         if stop is None:
             start, stop = 0, start
@@ -186,7 +189,9 @@ class RangeIndex(Index):
         return cls._simple_new(rng, name=name)
 
     @classmethod
-    def from_range(cls, data: range, name=None, dtype: Dtype | None = None) -> Self:
+    def from_range(
+        cls, data: range, name: Hashable | None = None, dtype: Dtype | None = None
+    ) -> Self:
         """
         Create :class:`pandas.RangeIndex` from a ``range`` object.
 
@@ -284,7 +289,7 @@ class RangeIndex(Index):
         rng = self._range
         return [("start", rng.start), ("stop", rng.stop), ("step", rng.step)]
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple:
         d = {"name": self._name}
         d.update(dict(self._get_data_as_items()))
         return ibase._new_Index, (type(self), d), None
@@ -292,7 +297,7 @@ class RangeIndex(Index):
     # --------------------------------------------------------------------
     # Rendering Methods
 
-    def _format_attrs(self):
+    def _format_attrs(self) -> list[tuple[str, str | int]]:  # type: ignore[override]
         """
         Return a list of tuples of the (attr, formatted_value)
         """
@@ -471,8 +476,51 @@ class RangeIndex(Index):
     # --------------------------------------------------------------------
     # Indexing Methods
 
-    @doc(Index.get_loc)
-    def get_loc(self, key) -> int:
+    def get_loc(self, key: int) -> int:  # type: ignore[override]
+        """
+        Get integer location for requested label.
+
+        Parameters
+        ----------
+        key : int or float
+            Label to locate. Integer-like floats (e.g. 3.0) are accepted and
+            treated as the corresponding integer. Non-integer floats and other
+            non-integer labels are not valid and will raise KeyError or
+            InvalidIndexError.
+
+        Returns
+        -------
+        int
+            Integer location of the label within the RangeIndex.
+
+        Raises
+        ------
+        KeyError
+            If the label is not present in the RangeIndex or the label is a
+            non-integer value.
+        InvalidIndexError
+            If the label is of an invalid type for the RangeIndex.
+
+        See Also
+        --------
+        RangeIndex.get_slice_bound : Calculate slice bound that corresponds to
+            given label.
+        RangeIndex.get_indexer : Computes indexer and mask for new index given
+            the current index.
+        RangeIndex.get_non_unique : Returns indexer and masks for new index given
+            the current index.
+        RangeIndex.get_indexer_for : Returns an indexer even when non-unique.
+
+        Examples
+        --------
+        >>> idx = pd.RangeIndex(5)
+        >>> idx.get_loc(3)
+        3
+
+        >>> idx = pd.RangeIndex(2, 10, 2)  # values [2, 4, 6, 8]
+        >>> idx.get_loc(6)
+        2
+        """
         if is_integer(key) or (is_float(key) and key.is_integer()):
             new_key = int(key)
             try:
@@ -489,7 +537,7 @@ class RangeIndex(Index):
         target: Index,
         method: str | None = None,
         limit: int | None = None,
-        tolerance=None,
+        tolerance: Any = None,
     ) -> npt.NDArray[np.intp]:
         if com.any_not_none(method, tolerance, limit):
             return super()._get_indexer(
@@ -526,16 +574,45 @@ class RangeIndex(Index):
     def tolist(self) -> list[int]:
         return list(self._range)
 
-    @doc(Index.__iter__)
     def __iter__(self) -> Iterator[int]:
+        """
+        Return an iterator of the values.
+
+        Returns
+        -------
+        iterator
+            An iterator yielding ints from the RangeIndex.
+
+        Examples
+        --------
+        >>> idx = pd.RangeIndex(3)
+        >>> for x in idx:
+        ...     print(x)
+        0
+        1
+        2
+        """
         yield from self._range
 
-    @doc(Index._shallow_copy)
-    def _shallow_copy(self, values, name: Hashable = no_default):
+    def _shallow_copy(  # type: ignore[override]
+        self, values: ArrayLike, name: Hashable = no_default
+    ) -> Index:
+        """
+        Create a new RangeIndex with the same class as the caller, don't copy the
+        data, use the same object attributes with passed in attributes taking
+        precedence.
+
+        *this is an internal non-public method*
+
+        Parameters
+        ----------
+        values : the values to create the new RangeIndex, optional
+        name : Label, defaults to self.name
+        """
         name = self._name if name is no_default else name
 
         if values.dtype.kind == "f":
-            return Index(values, name=name, dtype=np.float64)
+            return Index(values, name=name, dtype=np.float64, copy=False)
         if values.dtype.kind == "i" and values.ndim == 1:
             # GH 46675 & 43885: If values is equally spaced, return a
             # more memory-compact RangeIndex instead of Index with 64-bit dtype
@@ -553,13 +630,49 @@ class RangeIndex(Index):
         result._cache = self._cache
         return result
 
-    def _wrap_reindex_result(self, target, indexer, preserve_names: bool):
+    def _wrap_reindex_result(
+        self, target: Index, indexer: npt.NDArray[np.intp] | None, preserve_names: bool
+    ) -> Index:
         if not isinstance(target, type(self)) and target.dtype.kind == "i":
             target = self._shallow_copy(target._values, name=target.name)
         return super()._wrap_reindex_result(target, indexer, preserve_names)
 
-    @doc(Index.copy)
     def copy(self, name: Hashable | None = None, deep: bool = False) -> Self:
+        """
+        Make a copy of this object.
+
+        Name is set on the new object.
+
+        Parameters
+        ----------
+        name : Label, optional
+            Set name for new object.
+        deep : bool, default False
+            If True attempts to make a deep copy of the RangeIndex.
+                Else makes a shallow copy.
+
+        Returns
+        -------
+        RangeIndex
+            RangeIndex refer to new object which is a copy of this object.
+
+        See Also
+        --------
+        RangeIndex.delete: Make new RangeIndex with passed location(-s) deleted.
+        RangeIndex.drop: Make new RangeIndex with passed list of labels deleted.
+
+        Notes
+        -----
+        In most cases, there should be no functional difference from using
+        ``deep``, but if ``deep`` is passed it will attempt to deepcopy.
+
+        Examples
+        --------
+        >>> idx = pd.RangeIndex(3)
+        >>> new_idx = idx.copy()
+        >>> idx is new_idx
+        False
+        """
         name = self._validate_names(name=name, deep=deep)[0]
         new_index = self._rename(name=name)
         return new_index
@@ -573,13 +686,25 @@ class RangeIndex(Index):
 
         return self.start + self.step * no_steps
 
-    def min(self, axis=None, skipna: bool = True, *args, **kwargs) -> int | float:
+    def min(
+        self,
+        axis: AxisInt | None = None,
+        skipna: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int | float:
         """The minimum value of the RangeIndex"""
         nv.validate_minmax_axis(axis)
         nv.validate_min(args, kwargs)
         return self._minmax("min")
 
-    def max(self, axis=None, skipna: bool = True, *args, **kwargs) -> int | float:
+    def max(
+        self,
+        axis: AxisInt | None = None,
+        skipna: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int | float:
         """The maximum value of the RangeIndex"""
         nv.validate_minmax_axis(axis)
         nv.validate_max(args, kwargs)
@@ -588,7 +713,7 @@ class RangeIndex(Index):
     def _argminmax(
         self,
         meth: Literal["min", "max"],
-        axis=None,
+        axis: AxisInt | None = None,
         skipna: bool = True,
     ) -> int:
         nv.validate_minmax_axis(axis)
@@ -610,15 +735,27 @@ class RangeIndex(Index):
         else:
             raise ValueError(f"{meth=} must be max or min")
 
-    def argmin(self, axis=None, skipna: bool = True, *args, **kwargs) -> int:
+    def argmin(
+        self,
+        axis: AxisInt | None = None,
+        skipna: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
         nv.validate_argmin(args, kwargs)
         return self._argminmax("min", axis=axis, skipna=skipna)
 
-    def argmax(self, axis=None, skipna: bool = True, *args, **kwargs) -> int:
+    def argmax(
+        self,
+        axis: AxisInt | None = None,
+        skipna: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
         nv.validate_argmax(args, kwargs)
         return self._argminmax("max", axis=axis, skipna=skipna)
 
-    def argsort(self, *args, **kwargs) -> npt.NDArray[np.intp]:
+    def argsort(self, *args: Any, **kwargs: Any) -> npt.NDArray[np.intp]:
         """
         Returns the indices that would sort the index and its
         underlying data.
@@ -669,8 +806,7 @@ class RangeIndex(Index):
             return self._range == other._range
         return super().equals(other)
 
-    # error: Signature of "sort_values" incompatible with supertype "Index"
-    @overload  # type: ignore[override]
+    @overload
     def sort_values(
         self,
         *,
@@ -688,7 +824,7 @@ class RangeIndex(Index):
         ascending: bool = ...,
         na_position: NaPosition = ...,
         key: Callable | None = ...,
-    ) -> tuple[Self, np.ndarray | RangeIndex]: ...
+    ) -> tuple[Self, np.ndarray]: ...
 
     @overload
     def sort_values(
@@ -698,7 +834,7 @@ class RangeIndex(Index):
         ascending: bool = ...,
         na_position: NaPosition = ...,
         key: Callable | None = ...,
-    ) -> Self | tuple[Self, np.ndarray | RangeIndex]: ...
+    ) -> Self | tuple[Self, np.ndarray]: ...
 
     def sort_values(
         self,
@@ -707,7 +843,7 @@ class RangeIndex(Index):
         ascending: bool = True,
         na_position: NaPosition = "last",
         key: Callable | None = None,
-    ) -> Self | tuple[Self, np.ndarray | RangeIndex]:
+    ) -> Self | tuple[Self, np.ndarray]:
         if key is not None:
             return super().sort_values(
                 return_indexer=return_indexer,
@@ -722,28 +858,27 @@ class RangeIndex(Index):
                 if self.step < 0:
                     sorted_index = self[::-1]
                     inverse_indexer = True
-            else:
-                if self.step > 0:
-                    sorted_index = self[::-1]
-                    inverse_indexer = True
+            elif self.step > 0:
+                sorted_index = self[::-1]
+                inverse_indexer = True
 
         if return_indexer:
             if inverse_indexer:
-                rng = range(len(self) - 1, -1, -1)
+                indexer = np.arange(len(self) - 1, -1, -1, dtype=np.intp)
             else:
-                rng = range(len(self))
-            return sorted_index, RangeIndex(rng)
+                indexer = np.arange(len(self), dtype=np.intp)
+            return sorted_index, indexer
         else:
             return sorted_index
 
     # --------------------------------------------------------------------
     # Set Operations
 
-    def _intersection(self, other: Index, sort: bool = False):
+    def _intersection(self, other: Index, sort: bool = False) -> Index:
         # caller is responsible for checking self and other are both non-empty
 
         if not isinstance(other, RangeIndex):
-            return super()._intersection(other, sort=sort)
+            return super()._intersection(other, sort=sort)  # type: ignore[return-value]
 
         first = self._range[::-1] if self.step < 0 else self._range
         second = other._range[::-1] if other.step < 0 else other._range
@@ -807,7 +942,7 @@ class RangeIndex(Index):
             return False
         return other.start in self._range and other[-1] in self._range
 
-    def _union(self, other: Index, sort: bool | None):
+    def _union(self, other: Index, sort: bool | None) -> Index:
         """
         Form the union of two Index objects and sorts if possible
 
@@ -818,7 +953,7 @@ class RangeIndex(Index):
         sort : bool or None, default None
             Whether to sort (monotonically increasing) the resulting index.
             ``sort=None|True`` returns a ``RangeIndex`` if possible or a sorted
-            ``Index`` with a int64 dtype if not.
+            ``Index`` with an int64 dtype if not.
             ``sort=False`` can return a ``RangeIndex`` if self is monotonically
             increasing and other is fully contained in self. Otherwise, returns
             an unsorted ``Index`` with an int64 dtype.
@@ -863,7 +998,7 @@ class RangeIndex(Index):
                     ):
                         # e.g. range(0, 10, 2) and range(1, 11, 2)
                         #  but not range(0, 20, 4) and range(1, 21, 4) GH#44019
-                        return type(self)(start_r, end_r + step_s / 2, step_s / 2)
+                        return type(self)(start_r, end_r + step_s / 2, step_s / 2)  # type: ignore[arg-type]
 
                 elif step_o % step_s == 0:
                     if (
@@ -880,9 +1015,9 @@ class RangeIndex(Index):
                     ):
                         return type(self)(start_r, end_r + step_o, step_o)
 
-        return super()._union(other, sort=sort)
+        return super()._union(other, sort=sort)  # type: ignore[return-value]
 
-    def _difference(self, other, sort=None):
+    def _difference(self, other: Index, sort: bool | None = None) -> Index:
         # optimized set operation if we have another RangeIndex
         self._validate_sort_keyword(sort)
         self._assert_can_do_setop(other)
@@ -894,11 +1029,11 @@ class RangeIndex(Index):
         if sort is not False and self.step < 0:
             return self[::-1]._difference(other)
 
-        res_name = ops.get_op_result_name(self, other)
+        res_name = ops.get_op_result_name(self, other)  # type: ignore[no-untyped-call]
 
         first = self._range[::-1] if self.step < 0 else self._range
         overlap = self.intersection(other)
-        if overlap.step < 0:
+        if overlap.step < 0:  # type: ignore[attr-defined]
             overlap = overlap[::-1]
 
         if len(overlap) == 0:
@@ -925,14 +1060,14 @@ class RangeIndex(Index):
             # e.g. range(-8, 20, 7) and range(13, -9, -3)
             return self[1:-1]
 
-        if overlap.step == first.step:
+        if overlap.step == first.step:  # type: ignore[attr-defined]
             if overlap[0] == first.start:
                 # The difference is everything after the intersection
                 new_rng = range(overlap[-1] + first.step, first.stop, first.step)
             elif overlap[-1] == first[-1]:
                 # The difference is everything before the intersection
                 new_rng = range(first.start, overlap[0], first.step)
-            elif overlap._range == first[1:-1]:
+            elif overlap._range == first[1:-1]:  # type: ignore[attr-defined]
                 # e.g. range(4) and range(1, 3)
                 step = len(first) - 1
                 new_rng = first[::step]
@@ -946,7 +1081,7 @@ class RangeIndex(Index):
             #  len(overlap) == 0 and len(overlap) == len(self)
             assert len(self) > 1
 
-            if overlap.step == first.step * 2:
+            if overlap.step == first.step * 2:  # type: ignore[attr-defined]
                 if overlap[0] == first[0] and overlap[-1] in (first[-1], first[-2]):
                     # e.g. range(1, 10, 1) and range(1, 10, 2)
                     new_rng = first[1::2]
@@ -970,7 +1105,7 @@ class RangeIndex(Index):
         return new_index
 
     def symmetric_difference(
-        self, other, result_name: Hashable | None = None, sort=None
+        self, other: Axes, result_name: Hashable | None = None, sort: bool | None = None
     ) -> Index:
         if not isinstance(other, RangeIndex) or sort is not None:
             return super().symmetric_difference(other, result_name, sort)
@@ -997,7 +1132,10 @@ class RangeIndex(Index):
         if not isinstance(other, type(self)):
             maybe_ri = self._shallow_copy(other._values, name=other.name)
             if not isinstance(maybe_ri, type(self)):
-                return super()._join_monotonic(other, how=how)
+                # Cannot convert other to RangeIndex; fall back to
+                # _join_via_get_indexer since RangeIndex._can_use_libjoin
+                # is False.
+                raise NotImplementedError
             other = maybe_ri
 
         if self.equals(other):
@@ -1013,11 +1151,11 @@ class RangeIndex(Index):
             lidx = self.get_indexer(join_index)
             ridx = None
         elif how == "inner":
-            join_index = self.intersection(other)
+            join_index = self.intersection(other)  # type: ignore[assignment]
             lidx = self.get_indexer(join_index)
             ridx = other.get_indexer(join_index)
         elif how == "outer":
-            join_index = self.union(other)
+            join_index = self.union(other)  # type: ignore[assignment]
             lidx = self.get_indexer(join_index)
             ridx = other.get_indexer(join_index)
 
@@ -1029,7 +1167,9 @@ class RangeIndex(Index):
 
     # error: Return type "Index" of "delete" incompatible with return type
     #  "RangeIndex" in supertype "Index"
-    def delete(self, loc) -> Index:  # type: ignore[override]
+    def delete(  # type: ignore[override]
+        self, loc: int | np.integer | list[int] | npt.NDArray[np.integer]
+    ) -> Index:
         # In some cases we can retain RangeIndex, see also
         #  DatetimeTimedeltaMixin._get_delete_Freq
         if is_integer(loc):
@@ -1051,7 +1191,7 @@ class RangeIndex(Index):
 
         return super().delete(loc)
 
-    def insert(self, loc: int, item) -> Index:
+    def insert(self, loc: int, item: Hashable) -> Index:
         if is_integer(item) or is_float(item):
             # We can retain RangeIndex is inserting at the beginning or end,
             #  or right in the middle.
@@ -1081,7 +1221,7 @@ class RangeIndex(Index):
         Overriding parent method for the case of all RangeIndex instances.
 
         When all members of "indexes" are of type RangeIndex: result will be
-        RangeIndex if possible, Index with a int64 dtype otherwise. E.g.:
+        RangeIndex if possible, Index with an int64 dtype otherwise. E.g.:
         indexes = [RangeIndex(3), RangeIndex(3, 6)] -> RangeIndex(6)
         indexes = [RangeIndex(3), RangeIndex(4, 6)] -> Index([0,1,2,4,5], dtype='int64')
         """
@@ -1094,7 +1234,7 @@ class RangeIndex(Index):
         elif len(indexes) == 1:
             return indexes[0]
 
-        rng_indexes = cast(list[RangeIndex], indexes)
+        rng_indexes = cast("list[RangeIndex]", indexes)
 
         start = step = next_ = None
 
@@ -1128,7 +1268,7 @@ class RangeIndex(Index):
                         )
                     else:
                         values = np.concatenate([x._values for x in rng_indexes])
-                    result = self._constructor(values)
+                    result = self._constructor(values, copy=False)
                     return result.rename(name)
 
                 step = rng.start - start
@@ -1143,7 +1283,7 @@ class RangeIndex(Index):
                     )
                 else:
                     values = np.concatenate([x._values for x in rng_indexes])
-                result = self._constructor(values)
+                result = self._constructor(values, copy=False)
                 return result.rename(name)
 
             if step is not None:
@@ -1171,10 +1311,17 @@ class RangeIndex(Index):
     def size(self) -> int:
         return len(self)
 
-    def __getitem__(self, key):
+    @overload  # type: ignore[override]
+    def __getitem__(self, key: int) -> int: ...
+
+    @overload
+    def __getitem__(self, key: slice | np.ndarray | list[int] | list[bool]) -> Self: ...
+
+    def __getitem__(self, key: Any) -> Any:
         """
         Conserve RangeIndex type for scalar and slice keys.
         """
+        key = lib.item_from_zerodim(key)
         if key is Ellipsis:
             key = slice(None)
         if isinstance(key, slice):
@@ -1214,7 +1361,7 @@ class RangeIndex(Index):
         return type(self)._simple_new(res, name=self._name)
 
     @unpack_zerodim_and_defer("__floordiv__")
-    def __floordiv__(self, other):
+    def __floordiv__(self, other: object) -> Index:
         if is_integer(other) and other != 0:
             if len(self) == 0 or (self.start % other == 0 and self.step % other == 0):
                 start = self.start // other
@@ -1227,15 +1374,15 @@ class RangeIndex(Index):
                 new_range = range(start, start + 1, 1)
                 return self._simple_new(new_range, name=self._name)
 
-        return super().__floordiv__(other)
+        return super().__floordiv__(other)  # type: ignore[no-untyped-call]
 
     # --------------------------------------------------------------------
     # Reductions
 
-    def all(self, *args, **kwargs) -> bool:
+    def all(self, *args: Any, **kwargs: Any) -> bool:
         return 0 not in self._range
 
-    def any(self, *args, **kwargs) -> bool:
+    def any(self, *args: Any, **kwargs: Any) -> bool:
         return any(self._range)
 
     # --------------------------------------------------------------------
@@ -1276,13 +1423,13 @@ class RangeIndex(Index):
         else:
             return super().round(decimals=decimals)
 
-    def _cmp_method(self, other, op):
+    def _cmp_method(self, other: object, op: Callable) -> Any:
         if isinstance(other, RangeIndex) and self._range == other._range:
             # Both are immutable so if ._range attr. are equal, shortcut is possible
             return super()._cmp_method(self, op)
         return super()._cmp_method(other, op)
 
-    def _arith_method(self, other, op):
+    def _arith_method(self, other: object, op: Callable) -> Index:
         """
         Parameters
         ----------
@@ -1341,14 +1488,14 @@ class RangeIndex(Index):
                 rstart = op(left.start, right)
                 rstop = op(left.stop, right)
 
-            res_name = ops.get_op_result_name(self, other)
+            res_name = ops.get_op_result_name(self, other)  # type: ignore[no-untyped-call]
             result = type(self)(rstart, rstop, rstep, name=res_name)
 
             # for compat with numpy / Index with int64 dtype
             # even if we can represent as a RangeIndex, return
             # as a float64 Index if we have float-like descriptors
             if not all(is_integer(x) for x in [rstart, rstop, rstep]):
-                result = result.astype("float64")
+                result = result.astype("float64")  # type: ignore[assignment]
 
             return result
 
@@ -1381,11 +1528,11 @@ class RangeIndex(Index):
     # "RangeIndex" in supertype "Index"
     def take(  # type: ignore[override]
         self,
-        indices,
+        indices: Sequence[int] | np.ndarray,
         axis: Axis = 0,
         allow_fill: bool = True,
-        fill_value=None,
-        **kwargs,
+        fill_value: object = None,
+        **kwargs: Any,
     ) -> Self | Index:
         if kwargs:
             nv.validate_take((), kwargs)
@@ -1424,7 +1571,7 @@ class RangeIndex(Index):
         normalize: bool = False,
         sort: bool = True,
         ascending: bool = False,
-        bins=None,
+        bins: int | None = None,
         dropna: bool = True,
     ) -> Series:
         from pandas import Series
@@ -1445,9 +1592,25 @@ class RangeIndex(Index):
             data = data / len(self)
         return Series(data, index=self.copy(), name=name)
 
-    def searchsorted(  # type: ignore[override]
+    @overload  # type: ignore[override]
+    def searchsorted(  # pyright: ignore[reportOverlappingOverload]
         self,
-        value,
+        value: int | np.integer,
+        side: Literal["left", "right"] = ...,
+        sorter: NumpySorter | None = ...,
+    ) -> np.intp: ...
+
+    @overload
+    def searchsorted(
+        self,
+        value: npt.ArrayLike,
+        side: Literal["left", "right"] = ...,
+        sorter: NumpySorter | None = ...,
+    ) -> npt.NDArray[np.intp]: ...
+
+    def searchsorted(
+        self,
+        value: int | np.integer | npt.ArrayLike,
         side: Literal["left", "right"] = "left",
         sorter: NumpySorter | None = None,
     ) -> npt.NDArray[np.intp] | np.intp:

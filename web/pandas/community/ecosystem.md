@@ -25,7 +25,8 @@ authors to coordinate on the namespace.
 
   | Library                                                              | Accessor   | Classes               |
   | -------------------------------------------------------------------- | ---------- | --------------------- |
-  | [awkward-pandas](https://awkward-pandas.readthedocs.io/en/latest/)   | `ak`       | `Series`              |
+  | [akimbo](https://akimbo.readthedocs.io/en/latest/)                   | `ak`       | `Series`              |
+  | [bigframes](https://dataframes.bigquery.dev/)                        | `bigquery` | `DataFrame`           |
   | [pdvega](https://altair-viz.github.io/pdvega/)                       | `vgplot`   | `Series`, `DataFrame` |
   | [pandas-genomics](https://pandas-genomics.readthedocs.io/en/latest/) | `genomics` | `Series`, `DataFrame` |
   | [pint-pandas](https://github.com/hgrecco/pint-pandas)                | `pint`     | `Series`, `DataFrame` |
@@ -42,9 +43,9 @@ Pandas provides an interface for defining
 The following libraries implement that interface to provide types not found in NumPy or pandas,
 which work well with pandas' data containers.
 
-#### [awkward-pandas](https://github.com/scikit-hep/awkward)
+#### [akimbo](https://github.com/intake/akimbo)
 
-Awkward-pandas provides an extension type for storing [Awkward
+Akimbo provides an extension type for storing [Awkward
 Arrays](https://awkward-array.org/) inside pandas' Series and
 DataFrame. It also provides an accessor for using awkward functions
 on Series that are of awkward type.
@@ -368,6 +369,31 @@ def process_data():
     df2.to_parquet("out.pq")
 
 process_data()
+```
+
+#### [BigQuery DataFrames](https://dataframes.bigquery.dev/)
+
+BigQuery DataFrames compiles pandas-compatible expressions to run on the BigQuery engine.
+It can also compile to Polars for local data, if the hybrid engine is enabled. This allows
+you to use the pandas API without moving data out of BigQuery, as well as scale your
+local pandas workloads to BigQuery's petabyte-scale engine.
+
+It also provides a `bigquery` accessor, exposing BigQuery-native
+functionality to pandas objects such as
+[`pandas.DataFrame.bigquery.ai.forecast(...)`](https://dataframes.bigquery.dev/reference/api/bigframes.bigquery.ai.forecast.html),
+which provides access to Google's foundational model for time series prediction.
+
+To get started, install the `bigframes` package, then run:
+
+```python
+import bigframes.pandas as bpd
+
+bpd.options.bigquery.project = "your-google-cloud-project-id"
+bpd.options.bigquery.location = "US"
+bpd.options.bigquery.order_mode = "partial"  # Recommended for performance.
+
+df = bpd.read_pandas(pd_df)
+# ... your pandas-compatible code here ...
 ```
 
 #### [Dask](https://docs.dask.org)

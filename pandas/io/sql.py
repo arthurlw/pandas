@@ -24,6 +24,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
+    Self,
     cast,
     overload,
 )
@@ -32,13 +33,18 @@ import warnings
 import numpy as np
 
 from pandas._config import using_string_dtype
+from pandas._config.config import _global_config as config
 
 from pandas._libs import lib
-from pandas.compat._optional import import_optional_dependency
+from pandas.compat._optional import (
+    VERSIONS,
+    import_optional_dependency,
+)
 from pandas.errors import (
     AbstractMethodError,
     DatabaseError,
 )
+from pandas.util._decorators import set_module
 from pandas.util._exceptions import find_stack_level
 from pandas.util._validators import check_dtype_backend
 
@@ -51,7 +57,6 @@ from pandas.core.dtypes.common import (
 from pandas.core.dtypes.dtypes import DatetimeTZDtype
 from pandas.core.dtypes.missing import isna
 
-from pandas import get_option
 from pandas.core.api import (
     DataFrame,
     Series,
@@ -85,7 +90,6 @@ if TYPE_CHECKING:
         DtypeArg,
         DtypeBackend,
         IndexLabel,
-        Self,
     )
 
     from pandas import Index
@@ -263,6 +267,7 @@ def read_sql_table(
 ) -> Iterator[DataFrame]: ...
 
 
+@set_module("pandas")
 def read_sql_table(
     table_name: str,
     con,
@@ -394,6 +399,7 @@ def read_sql_query(
 ) -> Iterator[DataFrame]: ...
 
 
+@set_module("pandas")
 def read_sql_query(
     sql,
     con,
@@ -445,8 +451,6 @@ def read_sql_query(
     dtype : Type name or dict of columns
         Data type for data or columns. E.g. np.float64 or
         {'a': np.float64, 'b': np.int32, 'c': 'Int64'}.
-
-        .. versionadded:: 1.3.0
     dtype_backend : {'numpy_nullable', 'pyarrow'}
         Back-end data type applied to the resultant :class:`DataFrame`
         (still experimental). If not specified, the default behavior
@@ -532,6 +536,7 @@ def read_sql(
 ) -> Iterator[DataFrame]: ...
 
 
+@set_module("pandas")
 def read_sql(
     sql,
     con,
@@ -804,8 +809,6 @@ def to_sql(
         ``io.sql.engine`` is used. The default ``io.sql.engine``
         behavior is 'sqlalchemy'
 
-        .. versionadded:: 1.3.0
-
     **engine_kwargs
         Any additional kwargs are passed to the engine.
 
@@ -814,8 +817,6 @@ def to_sql(
     None or int
         Number of rows affected by to_sql. None is returned if the callable
         passed into ``method`` does not return an integer number of rows.
-
-        .. versionadded:: 1.4.0
 
     Notes
     -----
@@ -898,7 +899,10 @@ def pandasSQL_builder(
     sqlalchemy = import_optional_dependency("sqlalchemy", errors="ignore")
 
     if isinstance(con, str) and sqlalchemy is None:
-        raise ImportError("Using URI string without sqlalchemy installed.")
+        raise ImportError(
+            f"Using URI string without version '{VERSIONS['sqlalchemy']}' or newer "
+            "of 'sqlalchemy' installed."
+        )
 
     if sqlalchemy is not None and isinstance(con, (str, sqlalchemy.engine.Connectable)):
         return SQLDatabase(con, schema, need_transaction)
@@ -1006,7 +1010,7 @@ class SQLTable(PandasObject):
         data_iter : generator of list
            Each item contains a list of values to be inserted
         """
-        data = [dict(zip(keys, row)) for row in data_iter]
+        data = [dict(zip(keys, row, strict=True)) for row in data_iter]
         result = self.pd_sql.execute(self.table.insert(), data)
         return result.rowcount
 
@@ -1022,7 +1026,7 @@ class SQLTable(PandasObject):
 
         from sqlalchemy import insert
 
-        data = [dict(zip(keys, row)) for row in data_iter]
+        data = [dict(zip(keys, row, strict=True)) for row in data_iter]
         stmt = insert(self.table).values(data)
         result = self.pd_sql.execute(stmt)
         return result.rowcount
@@ -1112,7 +1116,9 @@ class SQLTable(PandasObject):
                 if start_i >= end_i:
                     break
 
-                chunk_iter = zip(*(arr[start_i:end_i] for arr in data_list))
+                chunk_iter = zip(
+                    *(arr[start_i:end_i] for arr in data_list), strict=True
+                )
                 num_inserted = exec_insert(conn, keys, chunk_iter)
                 # GH 46891
                 if num_inserted is not None:
@@ -1299,6 +1305,7 @@ class SQLTable(PandasObject):
         """
         parse_dates = _process_parse_dates_argument(parse_dates)
 
+        assert self.frame is not None  # caller always sets frame before this
         for sql_col in self.table.columns:
             col_name = sql_col.name
             try:
@@ -1344,7 +1351,7 @@ class SQLTable(PandasObject):
     def _sqlalchemy_type(self, col: Index | Series):
         dtype: DtypeArg = self.dtype or {}
         if is_dict_like(dtype):
-            dtype = cast(dict, dtype)
+            dtype = cast("dict", dtype)
             if col.name in dtype:
                 return dtype[col.name]
 
@@ -1577,7 +1584,7 @@ class SQLAlchemyEngine(BaseEngine):
 def get_engine(engine: str) -> BaseEngine:
     """return our implementation"""
     if engine == "auto":
-        engine = get_option("io.sql.engine")
+        engine = config["io"]["sql"]["engine"]
 
     if engine == "auto":
         # try engines in this order
@@ -1837,8 +1844,6 @@ class SQLDatabase(PandasSQL):
             Data type for data or columns. E.g. np.float64 or
             {'a': np.float64, 'b': np.int32, 'c': 'Int64'}
 
-            .. versionadded:: 1.3.0
-
         Returns
         -------
         DataFrame
@@ -1903,7 +1908,7 @@ class SQLDatabase(PandasSQL):
                 # dtype[Any], Type[object]]"
                 dtype = dict.fromkeys(frame, dtype)  # type: ignore[arg-type]
             else:
-                dtype = cast(dict, dtype)
+                dtype = cast("dict", dtype)
 
             from sqlalchemy.types import TypeEngine
 
@@ -2014,8 +2019,6 @@ class SQLDatabase(PandasSQL):
             SQL engine library to use. If 'auto', then the option
             ``io.sql.engine`` is used. The default ``io.sql.engine``
             behavior is 'sqlalchemy'
-
-            .. versionadded:: 1.3.0
 
         **engine_kwargs
             Any additional kwargs are passed to the engine.
@@ -2286,8 +2289,6 @@ class ADBCDatabase(PandasSQL):
         dtype : Type name or dict of columns
             Data type for data or columns. E.g. np.float64 or
             {'a': np.float64, 'b': np.int32, 'c': 'Int64'}
-
-            .. versionadded:: 1.3.0
 
         Returns
         -------
@@ -2633,7 +2634,7 @@ class SQLiteTable(SQLTable):
     def _sql_type_name(self, col):
         dtype: DtypeArg = self.dtype or {}
         if is_dict_like(dtype):
-            dtype = cast(dict, dtype)
+            dtype = cast("dict", dtype)
             if col.name in dtype:
                 return dtype[col.name]
 
@@ -2861,7 +2862,7 @@ class SQLiteDatabase(PandasSQL):
                 # dtype[Any], Type[object]]"
                 dtype = dict.fromkeys(frame, dtype)  # type: ignore[arg-type]
             else:
-                dtype = cast(dict, dtype)
+                dtype = cast("dict", dtype)
 
             for col, my_type in dtype.items():
                 if not isinstance(my_type, str):

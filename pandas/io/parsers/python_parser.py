@@ -165,7 +165,7 @@ class PythonParser(ParserBase):
             _,
         ) = self._extract_multi_indexer_columns(
             columns,
-            self.index_names,  # type: ignore[has-type]
+            self.index_names,
         )
 
         # get popped off for index
@@ -190,9 +190,13 @@ class PythonParser(ParserBase):
             regex = rf"^[\-\+]?[0-9]*({decimal}[0-9]*)?([0-9]?(E|e)\-?[0-9]+)?$"
         else:
             thousands = re.escape(self.thousands)
+            # GH#52619 - use non-backtracking structure to avoid catastrophic
+            # backtracking on cells with many comma-separated digit groups
+            # followed by non-numeric text.
             regex = (
-                rf"^[\-\+]?([0-9]+{thousands}|[0-9])*({decimal}[0-9]*)?"
-                rf"([0-9]?(E|e)\-?[0-9]+)?$"
+                rf"^[\-\+]?(?:[0-9]+(?:{thousands}[0-9]+)*{thousands}?)?"
+                rf"({decimal}[0-9]*)?"
+                rf"((E|e)\-?[0-9]+)?$"
             )
         return re.compile(regex)
 
@@ -218,6 +222,14 @@ class PythonParser(ParserBase):
 
             if sep is not None:
                 dia.delimiter = sep
+                # Skip rows at file level before csv.reader sees them
+                # prevents CSV parsing errors on lines that will be discarded
+                if self.skiprows is not None:
+                    while self.skipfunc(self.pos):
+                        line = f.readline()
+                        if not line:
+                            break
+                        self.pos += 1
             else:
                 # attempt to sniff the delimiter from the first valid line,
                 # i.e. no comment line and not in skiprows
@@ -227,7 +239,7 @@ class PythonParser(ParserBase):
                     self.pos += 1
                     line = f.readline()
                     lines = self._check_comments([[line]])[0]
-                lines_str = cast(list[str], lines)
+                lines_str = cast("list[str]", lines)
 
                 # since `line` was a string, lines will be a list containing
                 # only a single string
@@ -288,7 +300,7 @@ class PythonParser(ParserBase):
                 self.orig_names,
                 is_potential_multi_index(
                     self.orig_names,
-                    self.index_col,  # type: ignore[has-type]
+                    self.index_col,
                 ),
             )
             index, columns, col_dict = self._get_empty_meta(
@@ -325,14 +337,13 @@ class PythonParser(ParserBase):
             self.orig_names,
             is_potential_multi_index(
                 self.orig_names,
-                self.index_col,  # type: ignore[has-type]
+                self.index_col,
             ),
         )
 
         offset = 0
         if self._implicit_index:
-            # error: Cannot determine type of 'index_col'
-            offset = len(self.index_col)  # type: ignore[has-type]
+            offset = len(self.index_col)
 
         len_alldata = len(alldata)
         self._check_data_length(names, alldata)
@@ -502,7 +513,7 @@ class PythonParser(ParserBase):
                     values, skipna=False, convert_na_value=False
                 )
 
-            cats = Index(values).unique().dropna()
+            cats = Index(values, copy=False).unique().dropna()
             values = Categorical._from_inferred_categories(
                 cats, cats.get_indexer(values), cast_type, true_values=self.true_values
             )
@@ -574,7 +585,7 @@ class PythonParser(ParserBase):
             if isinstance(header, (list, tuple, np.ndarray)):
                 # we have a mi columns, so read an extra line
                 if have_mi_columns:
-                    header = list(header) + [header[-1] + 1]
+                    header = [*list(header), header[-1] + 1]
             else:
                 header = [header]
 
@@ -637,7 +648,9 @@ class PythonParser(ParserBase):
                         if i not in this_unnamed_cols
                     ] + this_unnamed_cols
 
-                    # TODO: Use pandas.io.common.dedup_names instead (see #50371)
+                    # This logic is similar to (but not close enough to
+                    # de-duplicate as of 2026-03-31) pandas.io.common.dedup_names
+                    # (see #50371)
                     for i in col_loop_order:
                         col = this_columns[i]
                         old_col = col
@@ -662,13 +675,12 @@ class PythonParser(ParserBase):
                         this_columns[i] = col
                         counts[col] = cur_count + 1
                 elif have_mi_columns:
-                    # if we have grabbed an extra line, but its not in our
-                    # format so save in the buffer, and create an blank extra
+                    # if we have grabbed an extra line, but it's not in our
+                    # format so save in the buffer, and create a blank extra
                     # line for the rest of the parsing code
                     if hr == header[-1]:
                         lc = len(this_columns)
-                        # error: Cannot determine type of 'index_col'
-                        sic = self.index_col  # type: ignore[has-type]
+                        sic = self.index_col
                         ic = len(sic) if sic is not None else 0
                         unnamed_count = len(this_unnamed_cols)
 
@@ -824,7 +836,7 @@ class PythonParser(ParserBase):
         the name, not the middle of it.
         """
         # first_row will be a list, so we need to check
-        # that that list is not empty before proceeding.
+        # that the list is not empty before proceeding.
         if not first_row:
             return first_row
 
@@ -956,7 +968,9 @@ class PythonParser(ParserBase):
         """
         if self.on_bad_lines == self.BadLineHandleMethod.ERROR:
             raise ParserError(msg)
-        if self.on_bad_lines == self.BadLineHandleMethod.WARN:
+        if self.on_bad_lines == self.BadLineHandleMethod.WARN or callable(
+            self.on_bad_lines
+        ):
             warnings.warn(
                 f"Skipping line {row_num}: {msg}\n",
                 ParserWarning,
@@ -1131,8 +1145,7 @@ class PythonParser(ParserBase):
         if line is not None:
             # leave it 0, #2442
             # Case 1
-            # error: Cannot determine type of 'index_col'
-            index_col = self.index_col  # type: ignore[has-type]
+            index_col = self.index_col
             if index_col is not False:
                 implicit_first_cols = len(line) - self.num_original_columns
 
@@ -1182,13 +1195,7 @@ class PythonParser(ParserBase):
         # Check that there are no rows with too many
         # elements in their row (rows with too few
         # elements are padded with NaN).
-        # error: Non-overlapping identity check (left operand type: "List[int]",
-        # right operand type: "Literal[False]")
-        if (
-            max_len > col_len
-            and self.index_col is not False  # type: ignore[comparison-overlap]
-            and self.usecols is None
-        ):
+        if max_len > col_len and self.index_col is not False and self.usecols is None:
             footers = self.skipfooter if self.skipfooter else 0
             bad_lines = []
 
@@ -1198,29 +1205,35 @@ class PythonParser(ParserBase):
 
             for i, _content in iter_content:
                 actual_len = len(_content)
-
                 if actual_len > col_len:
                     if callable(self.on_bad_lines):
                         new_l = self.on_bad_lines(_content)
                         if new_l is not None:
-                            content.append(new_l)  # pyright: ignore[reportArgumentType]
+                            new_l = cast("list[Scalar]", new_l)
+                            if len(new_l) > col_len:
+                                row_num = self.pos - (content_len - i + footers)
+                                bad_lines.append((row_num, len(new_l), "callable"))
+                                new_l = new_l[:col_len]
+                            content.append(new_l)
+
                     elif self.on_bad_lines in (
                         self.BadLineHandleMethod.ERROR,
                         self.BadLineHandleMethod.WARN,
                     ):
                         row_num = self.pos - (content_len - i + footers)
-                        bad_lines.append((row_num, actual_len))
-
+                        bad_lines.append((row_num, actual_len, "normal"))
                         if self.on_bad_lines == self.BadLineHandleMethod.ERROR:
                             break
                 else:
                     content.append(_content)
 
-            for row_num, actual_len in bad_lines:
+            for row_num, actual_len, source in bad_lines:
                 msg = (
                     f"Expected {col_len} fields in line {row_num + 1}, saw {actual_len}"
                 )
-                if (
+                if source == "callable":
+                    msg += " from bad_lines callable"
+                elif (
                     self.delimiter
                     and len(self.delimiter) > 1
                     and self.quoting != csv.QUOTE_NONE
@@ -1311,7 +1324,6 @@ class PythonParser(ParserBase):
 
                             if next_row is not None:
                                 new_rows.append(next_row)
-                        len_new_rows = len(new_rows)
 
                 except StopIteration:
                     len_new_rows = len(new_rows)
@@ -1350,7 +1362,7 @@ class PythonParser(ParserBase):
             )
         if self.columns and self.dtype:
             assert self._col_indices is not None
-            for i, col in zip(self._col_indices, self.columns):
+            for i, col in zip(self._col_indices, self.columns, strict=True):
                 if not isinstance(self.dtype, dict) and not is_numeric_dtype(
                     self.dtype
                 ):
@@ -1467,12 +1479,10 @@ class FixedWidthReader(abc.Iterator):
         shifted = np.roll(mask, 1)
         shifted[0] = 0
         edges = np.where((mask ^ shifted) == 1)[0]
-        edge_pairs = list(zip(edges[::2], edges[1::2]))
-        return edge_pairs  # type: ignore[return-value]
+        edge_pairs = list(zip(edges[::2], edges[1::2], strict=True))
+        return edge_pairs
 
     def __next__(self) -> list[str]:
-        # Argument 1 to "next" has incompatible type "Union[IO[str],
-        # ReadCsvBuffer[str]]"; expected "SupportsNext[str]"
         if self.buffer is not None:
             try:
                 line = next(self.buffer)

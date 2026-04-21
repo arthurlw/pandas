@@ -150,7 +150,7 @@ def isna(obj: object) -> bool | npt.NDArray[np.bool_] | NDFrame:
     >>> index = pd.DatetimeIndex(["2017-07-05", "2017-07-06", None, "2017-07-08"])
     >>> index
     DatetimeIndex(['2017-07-05', '2017-07-06', 'NaT', '2017-07-08'],
-                  dtype='datetime64[s]', freq=None)
+                  dtype='datetime64[us]', freq=None)
     >>> pd.isna(index)
     array([False, False,  True, False])
 
@@ -240,7 +240,7 @@ def _isna_array(values: ArrayLike) -> npt.NDArray[np.bool_] | NDFrame:
     if not isinstance(values, np.ndarray):
         # i.e. ExtensionArray
         # error: Incompatible types in assignment (expression has type
-        # "Union[ndarray[Any, Any], ExtensionArraySupportsAnyAll]", variable has
+        # "Union[ndarray[Any, Any], ExtensionArrayNaResult]", variable has
         # type "ndarray[Any, dtype[bool_]]")
         result = values.isna()  # type: ignore[assignment]
     elif isinstance(values, np.rec.recarray):
@@ -263,13 +263,12 @@ def _isna_string_dtype(values: np.ndarray) -> npt.NDArray[np.bool_]:
 
     if dtype.kind in ("S", "U"):
         result = np.zeros(values.shape, dtype=bool)
+    elif values.ndim in {1, 2}:
+        result = libmissing.isnaobj(values)
     else:
-        if values.ndim in {1, 2}:
-            result = libmissing.isnaobj(values)
-        else:
-            # 0-D, reached via e.g. mask_missing
-            result = libmissing.isnaobj(values.ravel())
-            result = result.reshape(values.shape)
+        # 0-D, reached via e.g. mask_missing
+        result = libmissing.isnaobj(values.ravel())
+        result = result.reshape(values.shape)
 
     return result
 
@@ -365,7 +364,7 @@ def notna(obj: object) -> bool | npt.NDArray[np.bool_] | NDFrame:
     >>> index = pd.DatetimeIndex(["2017-07-05", "2017-07-06", None, "2017-07-08"])
     >>> index
     DatetimeIndex(['2017-07-05', '2017-07-06', 'NaT', '2017-07-08'],
-                  dtype='datetime64[s]', freq=None)
+                  dtype='datetime64[us]', freq=None)
     >>> pd.notna(index)
     array([ True,  True, False,  True])
 
@@ -452,7 +451,7 @@ def array_equivalent(
 
     # Slow path when we allow comparing different dtypes.
     # Object arrays can contain None, NaN and NaT.
-    # string dtypes must be come to this path for NumPy 1.7.1 compat
+    # string dtypes must come to this path for NumPy 1.7.1 compat
     if left.dtype.kind in "OSU" or right.dtype.kind in "OSU":
         # Note: `in "OSU"` is non-trivially faster than `in ["O", "S", "U"]`
         #  or `in ("O", "S", "U")`
@@ -514,7 +513,7 @@ def _array_equivalent_object(
         left_remaining = left
         right_remaining = right
 
-    for left_value, right_value in zip(left_remaining, right_remaining):
+    for left_value, right_value in zip(left_remaining, right_remaining, strict=True):
         if left_value is NaT and right_value is not NaT:
             return False
 
@@ -593,7 +592,7 @@ def construct_1d_array_from_inferred_fill_value(
 
 def maybe_fill(arr: np.ndarray) -> np.ndarray:
     """
-    Fill numpy.ndarray with NaN, unless we have a integer or boolean dtype.
+    Fill numpy.ndarray with NaN, unless we have an integer or boolean dtype.
     """
     if arr.dtype.kind not in "iub":
         arr.fill(np.nan)
@@ -626,7 +625,7 @@ def na_value_for_dtype(dtype: DtypeObj, compat: bool = True):
     >>> na_value_for_dtype(np.dtype("bool"))
     False
     >>> na_value_for_dtype(np.dtype("datetime64[ns]"))
-    np.datetime64('NaT')
+    np.datetime64('NaT','ns')
     """
 
     if isinstance(dtype, ExtensionDtype):

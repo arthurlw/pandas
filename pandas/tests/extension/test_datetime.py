@@ -33,7 +33,7 @@ def dtype():
 @pytest.fixture
 def data(dtype):
     data = DatetimeArray._from_sequence(
-        pd.date_range("2000", periods=100, tz=dtype.tz), dtype=dtype
+        pd.date_range("2000", periods=10, tz=dtype.tz), dtype=dtype
     )
     return data
 
@@ -104,7 +104,7 @@ class TestDatetimeArray(base.ExtensionTests):
         return op_name in ["cummin", "cummax"]
 
     def _supports_reduction(self, obj, op_name: str) -> bool:
-        return op_name in ["min", "max", "median", "mean", "std", "any", "all"]
+        return op_name in ["min", "max", "median", "mean", "std", "any", "all", "count"]
 
     @pytest.mark.parametrize("skipna", [True, False])
     def test_reduce_series_boolean(self, data, all_boolean_reductions, skipna):
@@ -115,7 +115,8 @@ class TestDatetimeArray(base.ExtensionTests):
 
     def test_series_constructor(self, data):
         # Series construction drops any .freq attr
-        data = data._with_freq(None)
+        data = data.view()
+        data._freq = None
         super().test_series_constructor(data)
 
     @pytest.mark.parametrize("na_action", [None, "ignore"])

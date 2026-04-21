@@ -11,7 +11,7 @@ import pandas._testing as tm
 def data():
     """Fixture returning boolean array with valid and missing values."""
     return pd.array(
-        [True, False] * 4 + [np.nan] + [True, False] * 44 + [np.nan] + [True, False],
+        [True, False] * 2 + [np.nan] + [True, False] + [np.nan] + [True, False],
         dtype="boolean",
     )
 
@@ -118,7 +118,7 @@ def test_error_invalid_values(data, all_arithmetic_operators):
         ops(pd.Timestamp("20180101"))
 
     # invalid array-likes
-    if op not in ("__mul__", "__rmul__"):
+    if op not in ("__mul__", "__rmul__", "__add__", "__radd__"):
         # TODO(extension) numpy's mul with object array sees booleans as numbers
         msg = "|".join(
             [

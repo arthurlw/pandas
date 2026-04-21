@@ -63,8 +63,8 @@ class TestFactorize:
         expected_uniques = np.array([(1 + 0j), (2 + 0j), (2 + 1j)], dtype=complex)
         tm.assert_numpy_array_equal(uniques, expected_uniques)
 
-    def test_factorize(self, index_or_series_obj, sort):
-        obj = index_or_series_obj
+    def test_factorize(self, index_or_series_obj_orderable, sort):
+        obj = index_or_series_obj_orderable
         result_codes, result_uniques = obj.factorize(sort=sort)
 
         constructor = Index
@@ -435,7 +435,7 @@ class TestFactorize:
                 np.array(["b", "a"], dtype=object),
             ),
             (
-                pd.array([2, 1, np.nan, 2], dtype="Int64"),
+                pd.array([2, 1, pd.NA, 2], dtype="Int64"),
                 pd.array([2, 1], dtype="Int64"),
             ),
         ],
@@ -581,6 +581,16 @@ class TestUnique:
             if isinstance(index.dtype, DatetimeTZDtype):
                 expected = expected.normalize()
         tm.assert_index_equal(result, expected, exact=True)
+
+    def test_factorize_multiindex_empty(self):
+        # GH#57517
+        mi = MultiIndex.from_product(
+            [Index([], name="a", dtype=object), Index([], name="i", dtype="f4")]
+        )
+        codes, uniques = mi.factorize()
+        exp_codes = np.array([], dtype=np.intp)
+        tm.assert_numpy_array_equal(codes, exp_codes)
+        tm.assert_index_equal(uniques, mi[:0])
 
     def test_dtype_preservation(self, any_numpy_dtype):
         # GH 15442
@@ -1047,7 +1057,7 @@ class TestIsin:
         # nan is special, because from " a is b" doesn't follow "a == b"
         # at least, isin() should follow python's "np.nan in [nan] == True"
         # casting to -> np.float64 -> another float-object somewhere on
-        # the way could lead jeopardize this behavior
+        # the way could jeopardize this behavior
         comps = np.array([np.nan], dtype=object)  # could be casted to float64
         values = [np.nan]
         expected = np.array([True])
@@ -1241,7 +1251,7 @@ class TestValueCounts:
             algos.value_counts_internal(np.array(["1", 1], dtype=object), bins=1)
 
     def test_value_counts_nat(self):
-        td = Series([np.timedelta64(10000), NaT], dtype="timedelta64[ns]")
+        td = Series([np.timedelta64(10000, "ns"), NaT], dtype="timedelta64[ns]")
         dt = to_datetime(["NaT", "2014-01-01"])
 
         for ser in [td, dt]:
@@ -1254,7 +1264,7 @@ class TestValueCounts:
         result_dt = algos.value_counts_internal(dt)
         tm.assert_series_equal(result_dt, exp_dt)
 
-        exp_td = Series([1], index=[np.timedelta64(10000)], name="count")
+        exp_td = Series([1], index=[np.timedelta64(10000, "ns")], name="count")
         result_td = algos.value_counts_internal(td)
         tm.assert_series_equal(result_td, exp_td)
 
@@ -1436,6 +1446,19 @@ class TestValueCounts:
         )
         tm.assert_series_equal(result, expected)
 
+    def test_value_counts_stability(self):
+        # GH 63155
+        arr = np.random.default_rng(2).integers(0, 32, 64)
+        result = algos.value_counts_internal(arr, sort=True)
+
+        value_counts = Series(arr).value_counts(sort=False)
+        expected = value_counts.sort_values(ascending=False, kind="stable")
+        tm.assert_series_equal(result, expected)
+
+        unstable_sorted = value_counts.sort_values(ascending=False, kind="quicksort")
+        with pytest.raises(AssertionError):
+            tm.assert_series_equal(result, unstable_sorted)
+
 
 class TestDuplicated:
     def test_duplicated_with_nas(self):
@@ -1459,7 +1482,7 @@ class TestDuplicated:
 
         keys = np.empty(8, dtype=object)
         for i, t in enumerate(
-            zip([0, 0, np.nan, np.nan] * 2, [0, np.nan, 0, np.nan] * 2)
+            zip([0, 0, np.nan, np.nan] * 2, [0, np.nan, 0, np.nan] * 2, strict=True)
         ):
             keys[i] = t
 
@@ -1809,9 +1832,21 @@ class TestRank:
         s = Series([1, 2**63], dtype=dtype)
         tm.assert_numpy_array_equal(algos.rank(s), exp)
 
+    @pytest.mark.parametrize("method", ["average", "min", "max"])
+    def test_rank_tiny_values(self, method):
+        # GH62036: regression test for ranking with tiny float values
+        exp = np.array([4.0, 1.0, 3.0, np.nan, 2.0], dtype=np.float64)
+        s = Series(
+            [5.4954145e29, -9.791984e-21, 9.3715776e-26, pd.NA, 1.8790257e-28],
+            dtype="Float64",
+        )
+        s = s.astype(object)
+        result = algos.rank(s, method=method)
+        tm.assert_numpy_array_equal(result, exp)
+
     def test_too_many_ndims(self):
         arr = np.array([[[1, 2, 3], [4, 5, 6], [7, 8, 9]]])
-        msg = "Array with ndim > 2 are not supported"
+        msg = "Array with ndim > 2 is not supported"
 
         with pytest.raises(TypeError, match=msg):
             algos.rank(arr)

@@ -23,15 +23,15 @@ from pandas._libs.tslibs import (
     get_supported_dtype,
     is_supported_dtype,
 )
+from pandas.util._decorators import set_module
 
 from pandas.core.dtypes.base import ExtensionDtype
 from pandas.core.dtypes.cast import (
     construct_1d_arraylike_from_scalar,
     construct_1d_object_array_from_listlike,
+    ensure_dtype_can_hold_na,
     maybe_cast_to_datetime,
     maybe_cast_to_integer_array,
-    maybe_convert_platform,
-    maybe_infer_to_datetimelike,
     maybe_promote,
 )
 from pandas.core.dtypes.common import (
@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     )
 
 
+@set_module("pandas")
 def array(
     data: Sequence[object] | AnyArrayLike,
     dtype: Dtype | None = None,
@@ -176,9 +177,9 @@ def array(
     NumPy array.
 
     >>> pd.array(["a", "b"], dtype=str)
-    <NumpyExtensionArray>
+    <ArrowStringArray>
     ['a', 'b']
-    Length: 2, dtype: str32
+    Length: 2, dtype: str
 
     This would instead return the new ExtensionArray dedicated for string
     data. If you really need the new array to be backed by a  NumPy array,
@@ -188,6 +189,14 @@ def array(
     <NumpyExtensionArray>
     ['a', 'b']
     Length: 2, dtype: str32
+
+    pandas converts entries of a multidimensional sequence (excluding NumPy arrays)
+    to its string representation if the ``dtype`` is a string data type.
+
+    >>> pd.array([[1], [2], [3]], dtype="str")
+    <ArrowStringArray>
+    ['[1]', '[2]', '[3]']
+    Length: 3, dtype: str
 
     Finally, Pandas has arrays that mostly overlap with NumPy
 
@@ -230,14 +239,14 @@ def array(
     Length: 2, dtype: Float64
 
     >>> pd.array(["a", None, "c"])
-    <StringArray>
+    <ArrowStringArray>
     ['a', <NA>, 'c']
     Length: 3, dtype: string
 
-    >>> with pd.option_context("string_storage", "pyarrow"):
+    >>> with pd.option_context("string_storage", "python"):
     ...     arr = pd.array(["a", None, "c"])
     >>> arr
-    <ArrowStringArray>
+    <StringArray>
     ['a', <NA>, 'c']
     Length: 3, dtype: string
 
@@ -250,7 +259,7 @@ def array(
 
     >>> pd.array(["a", "b", "a"], dtype="category")
     ['a', 'b', 'a']
-    Categories (2, object): ['a', 'b']
+    Categories (2, str): ['a', 'b']
 
     Or specify the actual dtype
 
@@ -258,7 +267,7 @@ def array(
     ...     ["a", "b", "a"], dtype=pd.CategoricalDtype(["a", "b", "c"], ordered=True)
     ... )
     ['a', 'b', 'a']
-    Categories (3, object): ['a' < 'b' < 'c']
+    Categories (3, str): ['a' < 'b' < 'c']
 
     If pandas does not infer a dedicated extension type a
     :class:`arrays.NumpyExtensionArray` is returned.
@@ -310,6 +319,23 @@ def array(
 
     data = extract_array(data, extract_numpy=True)
 
+    # Handle numpy masked arrays: convert masked values to NA
+    # GH#63879
+    if isinstance(data, ma.MaskedArray):
+        if data.dtype.names is not None:
+            raise ValueError(
+                "Cannot construct an array from an ndarray with compound dtype. "
+                "Use DataFrame instead."
+            )
+        elif data.mask is not np.False_ and ma.getmaskarray(data).any():
+            na_dtype = ensure_dtype_can_hold_na(data.dtype)
+            if na_dtype.char in "SU":
+                na_dtype = np.dtype("object")
+            data = cast("ma.MaskedArray", data.astype(na_dtype)).filled(np.nan)
+        else:
+            # No mask, convert to regular array
+            data = np.asarray(data)
+
     # this returns None for not-found dtypes.
     if dtype is not None:
         dtype = pandas_dtype(dtype)
@@ -333,7 +359,7 @@ def array(
                 ensure_object(data),
                 convert_non_numeric=True,
                 convert_to_nullable_dtype=True,
-                dtype_if_all_nat=None,
+                dtype_if_all_nat=np.dtype("M8[s]"),
             )
             result = ensure_wrapped_if_datetimelike(result)
             if isinstance(result, np.ndarray):
@@ -347,7 +373,7 @@ def array(
                 return result.copy()
             return result
 
-        data = cast(np.ndarray, data)
+        data = cast("np.ndarray", data)
         result = ensure_wrapped_if_datetimelike(data)
         if result is not data:
             result = cast("DatetimeArray | TimedeltaArray", result)
@@ -454,7 +480,7 @@ def extract_array(
     --------
     >>> extract_array(pd.Series(["a", "b", "c"], dtype="category"))
     ['a', 'b', 'c']
-    Categories (3, object): ['a', 'b', 'c']
+    Categories (3, str): ['a', 'b', 'c']
 
     Other objects like lists, arrays, and DataFrames are just passed through.
 
@@ -518,7 +544,6 @@ def sanitize_masked_array(data: ma.MaskedArray) -> np.ndarray:
     mask = ma.getmaskarray(data)
     if mask.any():
         dtype, fill_value = maybe_promote(data.dtype, np.nan)
-        dtype = cast(np.dtype, dtype)
         data = ma.asarray(data.astype(dtype, copy=True))
         data.soften_mask()  # set hardmask False if it was True
         data[mask] = fill_value
@@ -612,7 +637,15 @@ def sanitize_array(
         if dtype is None:
             subarr = data
             if data.dtype == object and infer_object:
-                subarr = maybe_infer_to_datetimelike(data)
+                subarr = lib.maybe_convert_objects(
+                    data,
+                    # Here we do not convert numeric dtypes, as if we wanted that,
+                    #  numpy would have done it for us.
+                    convert_numeric=False,
+                    convert_non_numeric=True,
+                    convert_to_nullable_dtype=False,
+                    dtype_if_all_nat=np.dtype("M8[s]"),
+                )
             elif data.dtype.kind == "U" and using_string_dtype():
                 from pandas.core.arrays.string_ import StringDtype
 
@@ -656,16 +689,18 @@ def sanitize_array(
             subarr = _try_cast(data, dtype, copy)
 
         else:
-            subarr = maybe_convert_platform(data)
-            if subarr.dtype == object:
-                subarr = cast(np.ndarray, subarr)
-                subarr = maybe_infer_to_datetimelike(subarr)
+            subarr = construct_1d_object_array_from_listlike(data)
+            subarr = lib.maybe_convert_objects(
+                subarr,
+                convert_non_numeric=True,
+                dtype_if_all_nat=np.dtype("M8[s]"),
+            )
 
     subarr = _sanitize_ndim(subarr, data, dtype, index, allow_2d=allow_2d)
 
     if isinstance(subarr, np.ndarray):
         # at this point we should have dtype be None or subarr.dtype == dtype
-        dtype = cast(np.dtype, dtype)
+        dtype = cast("np.dtype", dtype)
         subarr = _sanitize_str_dtypes(subarr, data, dtype, copy)
 
     return subarr
@@ -723,6 +758,9 @@ def _sanitize_ndim(
             raise ValueError(
                 f"Data must be 1-dimensional, got ndarray of shape {data.shape} instead"
             )
+        elif allow_2d and isinstance(result, ABCExtensionArray):
+            # e.g. test_2d_ea_with_dtype_cast
+            return result
         if is_object_dtype(dtype) and isinstance(dtype, ExtensionDtype):
             # i.e. NumpyEADtype("O")
 
@@ -802,7 +840,7 @@ def _try_cast(
     elif dtype.kind == "U":
         # TODO: test cases with arr.dtype.kind in "mM"
         if is_ndarray:
-            arr = cast(np.ndarray, arr)
+            arr = cast("np.ndarray", arr)
             shape = arr.shape
             if arr.ndim > 1:
                 arr = arr.ravel()
@@ -814,7 +852,7 @@ def _try_cast(
 
     elif dtype.kind in "mM":
         if is_ndarray:
-            arr = cast(np.ndarray, arr)
+            arr = cast("np.ndarray", arr)
             if arr.ndim == 2 and arr.shape[1] == 1:
                 # GH#60081: DataFrame Constructor converts 1D data to array of
                 # shape (N, 1), but maybe_cast_to_datetime assumes 1D input
