@@ -380,7 +380,7 @@ class NumbaExecutionEngine(BaseExecutionEngine):
         def numba_func(values, col_names_index, index, *args):
             results = {}
             for i in range(values.shape[1 - axis]):
-                if axis in [0, "index"]:
+                if axis == 0 or axis == "index":  # noqa: PLR1714
                     arr = values[:, i]
                     result_key = index[i]
                     arr_index = col_names_index
